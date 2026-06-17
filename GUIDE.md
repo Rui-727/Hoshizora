@@ -248,27 +248,46 @@ in QEMU. The LFS system is fully isolated — your Arch install is never
 at risk.
 
 **Why LFS is the right call here:**
-- You choose the init system (LFS chapter 8.74 builds systemd by default — skip it, install hoshizora instead)
+- You choose the init system (LFS chapter 8.78 builds systemd by default — skip it, install hoshizora instead)
 - You build it in a chroot — your host kernel + systemd keep running your laptop
 - You boot the result in QEMU — full kernel-handoff-to-init experience, no real hardware
 - If it breaks: delete the LFS partition/directory, start over. Zero recovery needed.
 
-### 4.1 Follow the LFS book up to chapter 8.73
+### 4.1 Follow the LFS book up to chapter 8.77
 
-Build LFS exactly per the book (https://www.linuxfromscratch.org/lfs/).
-Stop before chapter 8.74 (Systemd). You'll have:
+Build LFS exactly per the book (https://www.linuxfromscratch.org/lfs/view/stable-systemd/).
+Stop before chapter 8.78 (Systemd-259.1). You'll have:
 - A complete base system in `/mnt/lfs` (or wherever you put it)
-- A kernel at `/mnt/lfs/boot/vmlinuz`
-- GRUB installed in the LFS root
-- Coreutils, bash, util-linux, iproute2, etc. all built and installed
+- GRUB installed in the LFS root (chapter 8.66)
+- Coreutils, bash, util-linux, iproute2 (chapter 8.68), kbd (chapter 8.69),
+  tar (chapter 8.73), etc. all built and installed
+
+Then continue through chapter 9 (System Configuration) and chapter 10
+(Making the LFS System Bootable), but skip the systemd-specific parts:
+
+- **Chapter 9 — do everything EXCEPT** 9.10 (Systemd Usage and Configuration)
+- **Chapter 10 — do all of it:**
+  - 10.2 Creating the /etc/fstab File
+  - 10.3 Linux-6.18.10 (build the kernel)
+  - 10.4 Using GRUB to Set Up the Boot Process
+
+After chapter 10 you'll have:
+- A kernel at `/boot/vmlinuz` (inside the LFS root)
+- A valid `/etc/fstab` (inside the LFS root)
+- GRUB configured (we won't use it for QEMU, but it doesn't hurt)
 
 ### 4.2 Substitute hoshizora for systemd
 
-Instead of chapter 8.74 (building systemd), do this:
+Instead of chapter 8.78 (building Systemd-259.1), do this:
 
 ```bash
-# Enter the LFS chroot (per LFS book chapter 7)
-sudo ./lfs-bootscripts/enter-chroot.sh   # or whatever the book uses
+# Enter the LFS chroot (per LFS book chapter 7.4 — exact command from the book)
+sudo chroot "$LFS" /usr/bin/env -i   \
+    HOME=/root                  \
+    TERM="$TERM"                \
+    PS1='(lfs chroot) \u:\w\$ ' \
+    PATH=/usr/bin:/usr/sbin     \
+    /bin/bash --login
 
 # Inside the chroot:
 cd /sources
