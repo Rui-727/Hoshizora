@@ -1,0 +1,71 @@
+#!/bin/bash
+# hz-session — pam_exec.so helper that tracks login sessions for hoshizora.
+# Called by PAM on session open/close. Writes a session file under
+# /run/hoshizora/sessions/$USER and grants ACLs on /dev/dri/*, /dev/snd/*,
+# /dev/input/* so the logged-in user gets GPU/sound/seat permissions.
+#
+# Install (as root):
+#   1. cp hz-session /etc/hoshizora/hz-session
+#   2. chmod 0755 /etc/hoshizora/hz-session
+#   3. mkdir -p /run/hoshizora/sessions && chmod 0755 /run/hoshizora/sessions
+#   4. Add to /etc/pam.d/login (or system-login, or your display-manager file):
+#        session required pam_exec.so /etc/hoshizora/hz-session
+#
+# PAM env vars (set by pam_exec):
+#   PAM_USER     — the logging-in user
+#   PAM_TYPE     — open_session | close_session | auth | etc.
+#   PAM_TTY      — the tty/seat (may be empty for graphical logins)
+#
+# deferred: no multi-seat logic, no udev integration (setfacl on login is
+# enough for the common single-seat case). For multi-seat, replace the
+# device list with a udev rule that triggers on /dev/dri/by-path/* matches.
+# No locking on the session file — concurrent logins of the same user
+# would race; acceptable for the single-user-laptop use case.
+
+set -eu
+
+SESSDIR=/run/hoshizora/sessions
+USER_="${PAM_USER:-}"
+TYPE="${PAM_TYPE:-}"
+TTY="${PAM_TTY:-}"
+PID_="${$:-}"   # pam_exec runs us in the session's process group
+
+if [ -z "$USER_" ]; then
+    echo "hz-session: no PAM_USER set" >&2
+    exit 0  # not a real session — skip silently
+fi
+
+# Devices to grant the user access to. Override via $HZ_SESSION_DEVS
+# (space-separated glob list). Defaults cover a typical laptop/desktop.
+DEVS_STR="${HZ_SESSION_DEVS:-/dev/dri/* /dev/snd/* /dev/input/event* /dev/video*}"
+# Split into array — word-splitting on whitespace is intentional here.
+# shellcheck disable=SC2206
+DEVS=($DEVS_STR)
+
+mkdir -p "$SESSDIR" 2>/dev/null || true
+SESSFILE="$SESSDIR/$USER_"
+
+case "$TYPE" in
+    open_session)
+        # Write session record: user:tty:pid:epoch
+        printf '%s:%s:%s:%s\n' "$USER_" "$TTY" "$PID_" "$(date +%s)" > "$SESSFILE"
+        chmod 0644 "$SESSFILE"
+        # Grant ACLs on devices
+        for d in "${DEVS[@]}"; do
+            [ -e "$d" ] || continue
+            setfacl -m "u:$USER_:rw" "$d" 2>/dev/null || true
+        done
+        ;;
+    close_session)
+        rm -f "$SESSFILE"
+        # Revoke ACLs. If the user has another session open, this leaves them
+        # without device access — for multi-session cases, scan $SESSDIR for
+        # other PIDs of the same user before revoking. deferred: single-seat.
+        for d in "${DEVS[@]}"; do
+            [ -e "$d" ] || continue
+            setfacl -x "u:$USER_" "$d" 2>/dev/null || true
+        done
+        ;;
+esac
+
+exit 0

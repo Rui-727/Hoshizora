@@ -58,11 +58,21 @@ static int g_reloadfd = -1;   /* timerfd armed for next pending respawn */
 static int g_healthfd = -1;   /* timerfd armed every 5s for health probes */
 static int g_fanfd = -1;      /* fanotify fd for file watches; -1 if unused */
 static int g_notifyfd = -1;   /* v2.0: sd_notify socket; -1 if unused */
+static int g_eventfd = -1;    /* v2.1: plugin event broadcast socket; -1 if unused */
 static volatile sig_atomic_t g_shutdown;
 static int g_reboot_target;  /* 0 = poweroff, 1 = reboot. Set by `reboot` cmd. */
 static const char *g_cfg_path;
 static char g_ctl_path[256] = "/run/hoshizora/control";
 static char g_notify_path[256] = "/run/hoshizora/notify";
+static char g_event_path[256] = "/run/hoshizora/events";
+
+/* v2.1: plugin event subscribers. Fixed-size array of accepted client fds
+ * that stay open and receive broadcast event lines. deferred: no epoll, no
+ * per-client write buffers — slow subscriber blocks all broadcasts. Upgrade
+ * to per-client queues if a real plugin needs it. */
+#define HZ_MAX_SUBS 8
+static int g_subs[HZ_MAX_SUBS];
+static int g_n_subs;
 
 /* v2.0: variable substitution. Top-level $NAME = "value" pairs, substituted
  * deferred: only in TOK_STRING (not IDENT) — covers paths in exec/log/listen.
@@ -94,6 +104,15 @@ static void handle_notify_event(void);            /* v2.0: parse READY=1, disarm
 static int  parse_duration(const char *s);
 static void mkdir_parents_of(const char *path);
 static int  parse_hostport(const char *str, char *host_out, int host_sz, int *port_out);
+/* v2.1: socket helpers used before definition */
+static int  setup_unix_socket(const char *env_name, const char *default_path,
+                              int sock_type, int do_listen,
+                              char *path_out, size_t path_sz, const char *label);
+
+/* v2.1: plugin event socket */
+static int  setup_event_socket(void);
+static void event_broadcast(const char *fmt, ...);
+static void handle_event_subscriber(void);
 
 /* ---------------------------------------------------------------------------
  * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
@@ -277,34 +296,53 @@ static int setup_listen_sockets(void) {
     return bound;
 }
 
+/* v2.1: helper — bind a Unix socket at `path` (env-override via `env_name`).
+ * Used by notify + event sockets (both 0666, any UID can connect — they're
+ * public input paths from untrusted services/plugins). Control socket stays
+ * inline because it uses 0660 (root-only). sock_type = SOCK_STREAM or
+ * SOCK_DGRAM. do_listen = 1 calls listen(). Returns bound fd or -1. */
+static int setup_unix_socket(const char *env_name, const char *default_path,
+                             int sock_type, int do_listen,
+                             char *path_out, size_t path_sz,
+                             const char *label) {
+    const char *env = env_name ? getenv(env_name) : NULL;
+    if (env && *env) {
+        strncpy(path_out, env, path_sz - 1);
+        path_out[path_sz - 1] = 0;
+    } else {
+        strncpy(path_out, default_path, path_sz - 1);
+        path_out[path_sz - 1] = 0;
+    }
+    mkdir_parents_of(path_out);
+    unlink(path_out);
+    int fd = socket(AF_UNIX, sock_type | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) { LOGW("%s socket: %s", label, strerror(errno)); return -1; }
+    struct sockaddr_un addr = {0};
+    addr.sun_family = AF_UNIX;
+    if (strlen(path_out) >= sizeof(addr.sun_path)) {
+        LOGW("%s path too long", label); close(fd); return -1;
+    }
+    strcpy(addr.sun_path, path_out);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0
+        || (do_listen && listen(fd, 8) < 0)) {
+        LOGW("%s bind: %s", label, strerror(errno));
+        close(fd); return -1;
+    }
+    chmod(path_out, 0666);
+    LOGI("%s socket: %s", label, path_out);
+    return fd;
+}
+
 /* ---------------------------------------------------------------------------
  * v2.0: sd-notify — one global Unix datagram socket at /run/hoshizora/notify.
  * Services send "<service-name> READY=1" or "<service-name> STOPPING=1".
  * deferred: full sd_notify protocol (status text, errno, watchdog). */
 static int setup_notify_socket(void) {
-    /* v2.0: allow test override via HZ_NOTIFY_PATH; default /run/hoshizora/notify. */
-    const char *env = getenv("HZ_NOTIFY_PATH");
-    if (env && *env) {
-        strncpy(g_notify_path, env, sizeof(g_notify_path) - 1);
-        g_notify_path[sizeof(g_notify_path) - 1] = 0;
-    }
-    mkdir_parents_of(g_notify_path);
-    unlink(g_notify_path);
-    g_notifyfd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (g_notifyfd < 0) { LOGW("notify socket: %s", strerror(errno)); return -1; }
-    struct sockaddr_un addr = {0};
-    addr.sun_family = AF_UNIX;
-    if (strlen(g_notify_path) >= sizeof(addr.sun_path)) {
-        LOGW("notify path too long"); close(g_notifyfd); g_notifyfd = -1; return -1;
-    }
-    strcpy(addr.sun_path, g_notify_path);
-    if (bind(g_notifyfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOGW("notify bind: %s", strerror(errno));
-        close(g_notifyfd); g_notifyfd = -1; return -1;
-    }
-    chmod(g_notify_path, 0666);
-    LOGI("notify socket: %s", g_notify_path);
-    return 0;
+    /* v2.0: sd-notify socket, datagram (services send READY=1 etc.). */
+    g_notifyfd = setup_unix_socket("HZ_NOTIFY_PATH", "/run/hoshizora/notify",
+                                   SOCK_DGRAM, 0,
+                                   g_notify_path, sizeof(g_notify_path), "notify");
+    return g_notifyfd < 0 ? -1 : 0;
 }
 
 static void handle_notify_event(void) {
@@ -324,9 +362,62 @@ static void handle_notify_event(void) {
             s->notify_ready = 1;
             s->start_deadline = 0;  /* disarm timeout */
             LOGI("%s: ready (sd_notify)", s->name);
+            event_broadcast("READY service=%s\n", s->name);
         }
     } else if (strstr(rest, "STOPPING=1")) {
         LOGI("%s: stopping (sd_notify)", s->name);
+        event_broadcast("STOPPING service=%s\n", s->name);
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * v2.1: PLUGIN EVENT SOCKET — broadcast state changes to subscriber processes.
+ * Plugins connect to /run/hoshizora/events and stay open; hoshizora writes
+ * event lines like "START service=nginx pid=1234" to all subscribers.
+ * deferred: no per-client buffering, no flow control, no event filtering.
+ * Slow subscriber blocks broadcasts to all. Add per-client queues if needed. */
+static int setup_event_socket(void) {
+    g_eventfd = setup_unix_socket("HZ_EVENT_PATH", "/run/hoshizora/events",
+                                  SOCK_STREAM, 1,
+                                  g_event_path, sizeof(g_event_path), "event");
+    return g_eventfd < 0 ? -1 : 0;
+}
+
+static void handle_event_subscriber(void) {
+    int cfd = accept4(g_eventfd, NULL, NULL, SOCK_CLOEXEC);
+    if (cfd < 0) return;
+    if (g_n_subs < HZ_MAX_SUBS) {
+        g_subs[g_n_subs++] = cfd;
+        /* send a hello line so the subscriber knows the connection is live */
+        dprintf(cfd, "HELLO hoshizora subscribers=%d\n", g_n_subs);
+        LOGI("event subscriber accepted (total=%d)", g_n_subs);
+    } else {
+        dprintf(cfd, "ERROR too many subscribers\n");
+        close(cfd);
+    }
+}
+
+static void event_broadcast(const char *fmt, ...) {
+    if (g_n_subs == 0) return;
+    char buf[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (n > (int)sizeof(buf)) n = sizeof(buf);
+    /* walk subscribers; close any that fail write (broken pipe / closed) */
+    int i = 0;
+    while (i < g_n_subs) {
+        ssize_t w = write(g_subs[i], buf, n);
+        if (w < 0 && (errno == EPIPE || errno == ECONNRESET)) {
+            LOGI("event subscriber %d gone", g_subs[i]);
+            close(g_subs[i]);
+            g_subs[i] = g_subs[g_n_subs - 1];  /* swap-remove */
+            g_n_subs--;
+            continue;  /* don't increment i — new fd at same slot */
+        }
+        i++;
     }
 }
 
@@ -1331,6 +1422,7 @@ static void on_fail_trigger(hz_service_t *s) {
  * Replaces scattered `s->state = HZ_S_FAILED;` assignments. */
 static void mark_failed(hz_service_t *s) {
     s->state = HZ_S_FAILED;
+    event_broadcast("FAILED service=%s restarts=%d\n", s->name, s->restart_count);
     on_fail_trigger(s);
 }
 
@@ -1472,6 +1564,7 @@ static int start_service(hz_service_t *s) {
     LOGI("started %s (pid=%d)%s%s", s->name, pid,
          s->expect_notify ? " (expect-notify)" : "",
          s->n_listen_fds > 0 ? " (listen-fds)" : "");
+    event_broadcast("START service=%s pid=%d\n", s->name, pid);
     return 0;
 }
 
@@ -1582,6 +1675,8 @@ static void reap_children(void) {
             int crashed = !WIFEXITED(status) || WEXITSTATUS(status) != 0;
             LOGI("%s (pid=%d) exited status=%d crashed=%d",
                  s->name, pid, status, crashed);
+            event_broadcast("EXIT service=%s pid=%d status=%d crashed=%d\n",
+                            s->name, pid, status, crashed);
             s->pid = 0;
             if (g_sys.shutting_down) { s->state = HZ_S_STOPPED; break; }
             /* ponytail: exit 127 = execve failed (ENOENT/EACCES/etc). Respawning
@@ -1689,6 +1784,7 @@ static void stop_parallel(hz_service_t **list, int n, const char *why) {
 static void shutdown_all(void) {
     g_sys.shutting_down = 1;
     LOGI("shutdown: stopping %d services", g_sys.n_services);
+    event_broadcast("SHUTDOWN services=%d\n", g_sys.n_services);
     hz_service_t *list[HZ_MAX_SERVICES];
     int n = 0;
     for (int i = g_sys.n_services - 1; i >= 0; i--)
@@ -2299,6 +2395,7 @@ int main(int argc, char **argv) {
     setup_fanotify();  /* non-fatal if it fails — watches just become inert */
     setup_listen_sockets();  /* v2.0: bind socket-activation fds before services start */
     setup_notify_socket();   /* v2.0: sd_notify socket — non-fatal if it fails */
+    setup_event_socket();    /* v2.1: plugin event broadcast — non-fatal if it fails */
     openlog("hoshizora", LOG_PID | LOG_NDELAY, LOG_DAEMON);  /* v2.0: journal integration */
     drop_capabilities();     /* v2.0: drop caps we don't need (warns if it fails) */
 
@@ -2327,16 +2424,18 @@ int main(int argc, char **argv) {
         start_service(s);
     }
 
-    struct pollfd pfds[6];
+    struct pollfd pfds[7];
     pfds[0].fd = g_sigfd;    pfds[0].events = POLLIN;
     pfds[1].fd = g_ctlfd;    pfds[1].events = POLLIN;
     pfds[2].fd = g_reloadfd; pfds[2].events = POLLIN;
     pfds[3].fd = g_healthfd; pfds[3].events = POLLIN;
     pfds[4].fd = g_fanfd;    pfds[4].events = POLLIN;
     pfds[5].fd = g_notifyfd; pfds[5].events = POLLIN;  /* v2.0: sd_notify */
-    nfds_t npfds = 6;
-    if (g_fanfd < 0)   pfds[4].fd = -1;
+    pfds[6].fd = g_eventfd;  pfds[6].events = POLLIN;  /* v2.1: plugin subs */
+    nfds_t npfds = 7;
+    if (g_fanfd < 0)    pfds[4].fd = -1;
     if (g_notifyfd < 0) pfds[5].fd = -1;
+    if (g_eventfd < 0)  pfds[6].fd = -1;
 
     while (!g_shutdown) {
         arm_respawn_timer();
@@ -2362,14 +2461,17 @@ int main(int argc, char **argv) {
             run_health_checks();
         }
         if (g_fanfd >= 0 && (pfds[4].revents & POLLIN)) handle_fanotify_event();
-        if (g_notifyfd >= 0 && (pfds[5].revents & POLLIN)) handle_notify_event();  /* v2.0 */
+        if (g_notifyfd >= 0 && (pfds[5].revents & POLLIN)) handle_notify_event();
+        if (g_eventfd >= 0 && (pfds[6].revents & POLLIN)) handle_event_subscriber();
     }
 
     LOGI("shutdown signal received");
     shutdown_all();
     reap_children();
     unlink(g_ctl_path);
+    unlink(g_event_path);  /* v2.1: clean up event socket */
     sync();
+    closelog();  /* v2.1: flush syslog connection before reboot */
     /* ponytail: PID 1 returning from main = kernel panic ("Attempted to kill
      * init!"). Must call reboot(2) to actually halt. RB_POWER_OFF on real
      * hardware powers the machine off; on VMs without ACPI shutdown it falls

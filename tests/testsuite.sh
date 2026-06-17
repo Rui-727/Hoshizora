@@ -50,6 +50,8 @@ run "on-fail"        onfail.sh
 run "cron"           cron.sh
 run "hzlog"          hzlog.sh
 run "v2-features"    v2.sh
+run "v2.1-features"  v21.sh
+run "plugin"         plugin.sh
 
 echo "========================================================"
 echo "  TESTSUITE SUMMARY"
