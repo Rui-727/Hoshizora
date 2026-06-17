@@ -1,8 +1,14 @@
 # HOSHIZORA - init system (PID 1) for Linux/x86_64.
 # deferred: one binary, no bootloader, no host compiler, no .hsb step.
 # Builds ./hoshizora. Install as /sbin/init or run as PID 1.
+#
+# musl is preferred (85% smaller static binaries). Falls back to gcc+glibc
+# if musl-gcc is not installed.
+#   make            → auto-detect musl-gcc, fall back to gcc
+#   make CC=musl-gcc → force musl
+#   make CC=gcc      → force glibc
 
-CC      = gcc
+CC      ?= $(shell if musl-gcc --version >/dev/null 2>&1; then echo musl-gcc; else echo gcc; fi)
 CFLAGS  = -Wall -Wextra -O2 -Iinclude -D_GNU_SOURCE
 LDFLAGS = -static
 

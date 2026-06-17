@@ -512,6 +512,21 @@ sudo rm -rf /mnt/lfs   # if you want to delete the LFS build entirely
 
 Your Arch install is untouched.
 
+### 4.10 Known issue: QEMU boot not yet tested
+
+`tests/qemu.sh` (section 3 above) builds an initramfs with hoshizora as
+`/init` + busybox, but has **not been run in a real QEMU instance yet**.
+The script is correct in principle but may have bugs we haven't seen.
+
+If you have QEMU installed, try it and report what happens:
+```bash
+sudo apt install qemu-system-x86 busybox-static   # or: sudo pacman -S qemu-desktop busybox
+./tests/qemu.sh
+```
+
+Report issues at https://github.com/Rui-727/Hoshizora/issues — include
+the QEMU output (kernel boot messages + hoshizora log lines).
+
 ---
 
 ## 5. Real hardware (real risk)

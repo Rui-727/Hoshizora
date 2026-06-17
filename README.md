@@ -125,11 +125,15 @@ make
 ```
 
 Produces four statically-linked binaries + one shell script:
-- `./hoshizora` — the init system (~1.0 MB, static)
-- `./hzctl` — the control client (~820 KB, static)
-- `./hzlog` — the syslog collector (~960 KB, static)
-- `./hz-event-logger` — example plugin (~810 KB, static)
-- `./hz-session` — pam_exec helper (shell, ~70 LOC)
+- `./hoshizora` — the init system (~151 KB with musl, ~1.0 MB with glibc)
+- `./hzctl` — the control client (~47 KB musl, ~820 KB glibc)
+- `./hzlog` — the syslog collector (~58 KB musl, ~960 KB glibc)
+- `./hz-event-logger` — example plugin (~60 KB musl, ~810 KB glibc)
+- `./scripts/hz-session` — pam_exec helper (shell, ~70 LOC)
+
+`make` auto-detects `musl-gcc` if installed (85% smaller binaries). Force
+glibc with `make CC=gcc`. Install musl: `apt install musl-tools` (Debian)
+or `pacman -S musl` (Arch).
 
 ## Self-check
 
@@ -266,6 +270,11 @@ No threads, no async, no event loop library. One process, one loop, seven fds.
 
 - RSS: < 1 MiB (static binary, single process, no mmap'd arenas)
 - CPU idle: 0% (uses `poll()` with timeout = next pending respawn)
+
+## Known TODOs
+
+- **QEMU boot testing**: `tests/qemu.sh` exists but has not been run in a real QEMU instance yet. Users with `qemu-system-x86` + `busybox` installed should try it and report issues at https://github.com/Rui-727/Hoshizora/issues. See `GUIDE.md` section 3 for instructions.
+- **initramfs `/init` script**: the shell script that mounts /proc /sys /dev /run and pivots to the real root before exec'ing hoshizora is not yet shipped. Hoshizora's `early-mounts` service covers this as a fallback, but a proper initramfs init is needed for real boots.
 
 ## License
 

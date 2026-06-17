@@ -50,7 +50,13 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
-#include <linux/capability.h>
+
+/* v2.0: capability dropping via raw capset(2) syscall. Inline the structs
+ * instead of including <linux/capability.h> — musl doesn't ship kernel
+ * headers, and we only need the ABI structs + version constant. */
+#define HZ_LINUX_CAPABILITY_VERSION_3 0x20080522
+struct hz_user_cap_header_struct { unsigned int version; int pid; };
+struct hz_user_cap_data_struct { unsigned int effective, permitted, inheritable; };
 
 static hz_system_t g_sys;
 static int g_sigfd = -1;
@@ -196,10 +202,10 @@ static void log_msg(const char *level, const char *fmt, ...) {
  *   CAP_SYS_PTRACE — not needed, drop
  * deferred: per-service capabilities: field — add when a config asks. */
 static int drop_capabilities(void) {
-    struct __user_cap_header_struct hdr = { .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0 };
-    struct __user_cap_data_struct data[2] = {0};
+    struct hz_user_cap_header_struct hdr = { .version = HZ_LINUX_CAPABILITY_VERSION_3, .pid = 0 };
+    struct hz_user_cap_data_struct data[2] = {0};
     /* bit 21 = CAP_SYS_ADMIN, 5 = CAP_KILL, 22 = CAP_SYS_BOOT, 12 = CAP_NET_ADMIN */
-    __u32 keep = (1U << 21) | (1U << 5) | (1U << 22) | (1U << 12);
+    unsigned int keep = (1U << 21) | (1U << 5) | (1U << 22) | (1U << 12);
     data[0].effective = data[0].permitted = data[0].inheritable = keep;
     /* bits 32+ → data[1]; none of our kept caps are there */
     if (syscall(SYS_capset, &hdr, data) < 0) {
