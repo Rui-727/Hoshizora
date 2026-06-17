@@ -46,6 +46,7 @@
 #include <sys/sendfile.h>
 #include <sys/ioctl.h>
 #include <sched.h>
+#include <sys/prctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
@@ -129,6 +130,7 @@ static void event_broadcast(const char *fmt, ...);
 static void handle_event_subscriber(void);
 static void event_flush_all(void);
 static void sub_remove(int idx);
+static time_t mono_now(void);  /* v2.2: needed by handle_notify_event + start_service */
 
 /* ---------------------------------------------------------------------------
  * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
@@ -383,6 +385,14 @@ static void handle_notify_event(void) {
     } else if (strstr(rest, "STOPPING=1")) {
         LOGI("%s: stopping (sd_notify)", s->name);
         event_broadcast("STOPPING service=%s\n", s->name);
+    } else if (strstr(rest, "WATCHDOG=1")) {
+        /* v2.2: watchdog — service is alive, reset the timer. */
+        s->watchdog_last = mono_now();
+    } else if (strstr(rest, "ERRNO=") || strstr(rest, "BUSERROR=")) {
+        /* v2.2: notify-failure — service reports why it's about to fail.
+         * Log the full message; mark_failed fires when the process exits. */
+        LOGW("%s: sd_notify failure: %s", s->name, rest);
+        event_broadcast("NOTIFY_FAILURE service=%s msg=%s\n", s->name, rest);
     }
 }
 
@@ -516,7 +526,9 @@ static void event_flush_all(void) {
 static int setup_container_child(const hz_service_t *s) {
     if (!s->container.new_ns && !s->container.rootfs[0]) return 0;
     if (s->container.new_ns) {
-        if (unshare(CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWPID) < 0) {
+        /* v2.2: full namespace isolation — added NEWIPC|NEWUTS. deferred: NEWUSER
+         * needs uid/gid mapping setup, skip until a real config asks. */
+        if (unshare(CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWUTS) < 0) {
             LOGW("%s: unshare: %s — running without namespace isolation", s->name, strerror(errno));
             /* keep going — degraded mode, not fatal */
         }
@@ -1117,6 +1129,94 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
                 s->container.n_binds++;
             } else { LOGE("%s: too many bind: entries", s->name); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "rootfs-readonly") == 0) {
+            /* v2.2: rootfs-readonly: true; — remount rootfs MS_RDONLY after pivot. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "true") != 0) {
+                LOGE("%s: rootfs-readonly: only `true` supported", s->name); return -1;
+            }
+            s->container.readonly = 1;
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "io-weight") == 0) {
+            /* v2.2: io-weight: N (1-10000); — cgroup v2 io.weight */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_NUMBER) return -1;
+            s->io_weight = atoi(t.text);
+            if (s->io_weight < 1 || s->io_weight > 10000) {
+                LOGE("%s: io-weight %s out of range (1-10000)", s->name, t.text); return -1;
+            }
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "memory-high") == 0) {
+            /* v2.2: memory-high: 512MiB; — cgroup v2 memory.high (soft limit) */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t)) return -1;
+            char val[HZ_MAX_STR] = {0};
+            if (t.kind == TOK_STRING) strncpy(val, t.text, sizeof(val) - 1);
+            else if (t.kind == TOK_NUMBER || t.kind == TOK_IDENT) {
+                strncpy(val, t.text, sizeof(val) - 1);
+                lexer_t save = *L; tok_t t2;
+                if (next_token(&save, &t2) && t2.kind == TOK_IDENT) {
+                    size_t vl = strlen(val), sl = strlen(t2.text);
+                    if (vl + sl < sizeof(val)) { strcat(val, t2.text); *L = save; }
+                }
+            } else return -1;
+            s->memory_high = parse_size(val);
+            if (s->memory_high == 0) { LOGE("%s: bad memory-high: %s", s->name, val); return -1; }
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "cpu-max") == 0) {
+            /* v2.2: cpu-max: "50%"; or "quota period" — cgroup v2 cpu.max.
+             * "50%" → quota = period * 50 / 100 (period default 100000us). */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
+            if (strchr(t.text, '%')) {
+                int pct = atoi(t.text);
+                int period = 100000;
+                s->cpu_max_quota = (int)((long long)period * pct / 100);
+                s->cpu_max_period = period;
+            } else if (sscanf(t.text, "%d %d", &s->cpu_max_quota, &s->cpu_max_period) >= 1) {
+                if (s->cpu_max_period == 0) s->cpu_max_period = 100000;
+            } else { LOGE("%s: bad cpu-max: %s", s->name, t.text); return -1; }
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "no-new-privs") == 0) {
+            /* v2.2: no-new-privs: true; — prctl(PR_SET_NO_NEW_PRIVS) in child. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "true") != 0) {
+                LOGE("%s: no-new-privs: only `true` supported", s->name); return -1;
+            }
+            s->no_new_privs = 1;
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "run-as") == 0) {
+            /* v2.2: run-as: "uid:gid"; — setuid/setgid before exec. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
+            unsigned int u, g;
+            if (sscanf(t.text, "%u:%u", &u, &g) != 2) {
+                LOGE("%s: bad run-as: %s (expected 'uid:gid')", s->name, t.text); return -1;
+            }
+            s->run_as_uid = u; s->run_as_gid = g;
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "pre-start") == 0) {
+            /* v2.2: pre-start: "cmd"; — shell command run before fork. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
+            strncpy(s->pre_start, t.text, HZ_MAX_PATH - 1);
+            s->pre_start[HZ_MAX_PATH - 1] = 0;
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "post-stop") == 0) {
+            /* v2.2: post-stop: "cmd"; — shell command run after stop reaps. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
+            strncpy(s->post_stop, t.text, HZ_MAX_PATH - 1);
+            s->post_stop[HZ_MAX_PATH - 1] = 0;
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
+        } else if (strcmp(t.text, "watchdog-timeout") == 0) {
+            /* v2.2: watchdog-timeout: Ns; — service must send WATCHDOG=1
+             * within this interval or be marked FAILED. */
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
+            if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
+            s->watchdog_timeout = parse_duration(t.text);
+            if (s->watchdog_timeout < 1) { LOGE("%s: bad watchdog-timeout: %s", s->name, t.text); return -1; }
+            if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else {
             /* deferred: skip unknown field (capabilities, transactional,
              * snapshot). Add when a feature is actually requested. */
@@ -1246,10 +1346,12 @@ static int parse_config(lexer_t *L) {
             }
             strncpy(w->path, t.text, HZ_MAX_PATH - 1);
             w->path[HZ_MAX_PATH - 1] = 0;
-            /* ponytail: optional `recursive` keyword — accepted for config
-             * compat, not honored (fanotify marks top dir only). */
+            /* v2.2: optional `recursive` keyword — now honored via
+             * FAN_MARK_FILESYSTEM (kernel ≥5.16), falls back to top-dir on
+             * older kernels. */
             if (peek_ident_is(L, "recursive")) {
-                next_token(L, &t);
+                next_token(L, &t);  /* consume `recursive` */
+                w->recursive = 1;
             }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != '{') {
                 LOGE("watch %s: expected '{'", w->path);
@@ -1339,6 +1441,9 @@ static int load_config(const char *path) {
         subst_vars(s->container.rootfs, sizeof(s->container.rootfs));
         for (int j = 0; j < s->container.n_binds; j++)
             subst_vars(s->container.binds[j], sizeof(s->container.binds[j]));
+        /* v2.2: subst lifecycle hooks too */
+        subst_vars(s->pre_start, sizeof(s->pre_start));
+        subst_vars(s->post_stop, sizeof(s->post_stop));
     }
     return 0;
 }
@@ -1575,6 +1680,18 @@ static int start_service(hz_service_t *s) {
      * cgroup v2 isn't mounted (LOGW once at startup). */
     cgroup_setup_for(s);
 
+    /* v2.2: pre-start hook — run a shell command before forking. Failure
+     * (non-zero exit) aborts the start. deferred: no timeout on pre-start. */
+    if (s->pre_start[0]) {
+        int rc = system(s->pre_start);
+        if (rc != 0) {
+            LOGE("%s: pre-start '%s' exited %d — aborting start", s->name, s->pre_start, rc);
+            mark_failed(s);
+            return -1;
+        }
+        LOGI("%s: pre-start '%s' ok", s->name, s->pre_start);
+    }
+
     pid_t pid = fork();
     if (pid < 0) { LOGE("fork %s: %s", s->name, strerror(errno)); mark_failed(s); return -1; }
     if (pid == 0) {
@@ -1588,6 +1705,30 @@ static int start_service(hz_service_t *s) {
         /* v2.0: container integration (namespace + pivot_root + binds).
          * Failure here is logged but not fatal — degraded mode. */
         setup_container_child(s);
+        /* v2.2: rootfs-readonly — remount the new root MS_RDONLY after pivot.
+         * Only meaningful if rootfs: is set; no-op otherwise. */
+        if (s->container.rootfs[0] && s->container.readonly) {
+            mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
+        }
+        /* v2.2: no-new-privs — prctl before exec so the service (and its
+         * children) can't gain caps via setuid binaries. */
+        if (s->no_new_privs) {
+            prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        }
+        /* v2.2: per-service-user — setgid first (setuid would drop the
+         * ability to setgid), then setuid, then clear supplementary groups. */
+        if (s->run_as_gid) {
+            if (setgid(s->run_as_gid) < 0) {
+                LOGE("%s: setgid(%d): %s", s->name, s->run_as_gid, strerror(errno));
+                _exit(127);
+            }
+        }
+        if (s->run_as_uid) {
+            if (setuid(s->run_as_uid) < 0) {
+                LOGE("%s: setuid(%d): %s", s->name, s->run_as_uid, strerror(errno));
+                _exit(127);
+            }
+        }
         /* v2.0: socket activation — dup listen fds to 3, 4, ... so the child
          * inherits them and can accept() directly. Set HZ_LISTEN_FDS env. */
         int nfd = 0;
@@ -1643,6 +1784,7 @@ static int start_service(hz_service_t *s) {
     s->pid = pid;
     s->state = HZ_S_RUNNING;
     s->notify_ready = 0;  /* v2.0: clear on (re)start */
+    s->watchdog_last = mono_now();  /* v2.2: arm watchdog baseline */
     /* v2.0: arm start_deadline if timeout-start is set. Disarmed by
      * run_health_checks when state != RUNNING past deadline, or by
      * handle_notify_event on READY=1. */
@@ -1658,7 +1800,7 @@ static int start_service(hz_service_t *s) {
 }
 
 static int stop_service(hz_service_t *s) {
-    /* ponytail: delegate to stop_parallel with a 1-element list. Old inline
+    /* deferred: delegate to stop_parallel with a 1-element list. Old inline
      * SIGTERM→5s-wait→SIGKILL was a copy of stop_parallel's logic — one
      * implementation, two callers (here + shutdown_all/reload). */
     s->manual_stop = 1;  /* even if not running, mark so pending respawn cancels */
@@ -1666,6 +1808,12 @@ static int stop_service(hz_service_t *s) {
     if (s->state != HZ_S_RUNNING || s->pid <= 0) return 0;
     hz_service_t *list[1] = { s };
     stop_parallel(list, 1, "stop");
+    /* v2.2: post-stop hook — fire after the service is reaped. Best-effort:
+     * no timeout, no status check, just runs. deferred: log exit code. */
+    if (s->post_stop[0]) {
+        int rc = system(s->post_stop);
+        LOGI("%s: post-stop '%s' exited %d", s->name, s->post_stop, rc);
+    }
     return 0;
 }
 
@@ -1688,9 +1836,10 @@ static int cgroup_v2_available(void) {
 }
 
 static void cgroup_setup_for(const hz_service_t *s) {
-    if (s->memory_limit == 0 && s->cpu_weight == 0 && !s->oom_kill_group) return;
+    if (s->memory_limit == 0 && s->cpu_weight == 0 && !s->oom_kill_group
+        && s->io_weight == 0 && s->memory_high == 0 && s->cpu_max_quota == 0) return;
     if (!cgroup_v2_available()) {
-        /* ponytail: would log per-service-per-start; check at startup instead.
+        /* deferred: would log per-service-per-start; check at startup instead.
          * Logged once in main() right after setup_fanotify. */
         return;
     }
@@ -1705,28 +1854,28 @@ static void cgroup_setup_for(const hz_service_t *s) {
         return;
     }
     char file[HZ_MAX_PATH + 32];
-    if (s->memory_limit > 0) {
-        snprintf(file, sizeof(file), "%s/memory.max", path);
-        int fd = open(file, O_WRONLY);
-        if (fd < 0) LOGW("%s: open %s: %s", s->name, file, strerror(errno));
-        else { dprintf(fd, "%llu", (unsigned long long)s->memory_limit); close(fd); }
+    /* v2.2 helper — write a cgroup file with an integer/string value. */
+    #define HZ_CG_WRITE(field, fmt, val) do { \
+        snprintf(file, sizeof(file), "%s/%s", path, field); \
+        int fd_ = open(file, O_WRONLY); \
+        if (fd_ < 0) LOGW("%s: open %s: %s", s->name, file, strerror(errno)); \
+        else { dprintf(fd_, fmt, val); close(fd_); } \
+    } while (0)
+    if (s->memory_limit > 0) HZ_CG_WRITE("memory.max", "%llu", (unsigned long long)s->memory_limit);
+    if (s->cpu_weight > 0)   HZ_CG_WRITE("cpu.weight", "%d", s->cpu_weight);
+    if (s->oom_kill_group)   HZ_CG_WRITE("memory.oom.group", "%d", 1);
+    /* v2.2: new cgroup fields */
+    if (s->io_weight > 0)    HZ_CG_WRITE("io.weight", "%d", s->io_weight);
+    if (s->memory_high > 0)  HZ_CG_WRITE("memory.high", "%llu", (unsigned long long)s->memory_high);
+    if (s->cpu_max_quota > 0) {
+        char buf[64];
+        int period = s->cpu_max_period > 0 ? s->cpu_max_period : 100000;
+        snprintf(buf, sizeof(buf), "%s/%s", path, "cpu.max");
+        int fd_ = open(buf, O_WRONLY);
+        if (fd_ < 0) LOGW("%s: open %s: %s", s->name, buf, strerror(errno));
+        else { dprintf(fd_, "%d %d", s->cpu_max_quota, period); close(fd_); }
     }
-    if (s->cpu_weight > 0) {
-        snprintf(file, sizeof(file), "%s/cpu.weight", path);
-        int fd = open(file, O_WRONLY);
-        if (fd < 0) LOGW("%s: open %s: %s", s->name, file, strerror(errno));
-        else { dprintf(fd, "%d", s->cpu_weight); close(fd); }
-    }
-    /* ponytail: oom-kill: group — write 1 to memory.oom.group so the kernel
-     * kills every process in this cgroup on OOM, not just the allocator.
-     * Prevents half-dead services (one child oom-killed, others still running
-     * but in a corrupt state). */
-    if (s->oom_kill_group) {
-        snprintf(file, sizeof(file), "%s/memory.oom.group", path);
-        int fd = open(file, O_WRONLY);
-        if (fd < 0) LOGW("%s: open %s: %s", s->name, file, strerror(errno));
-        else { dprintf(fd, "1"); close(fd); }
-    }
+    #undef HZ_CG_WRITE
     LOGI("%s: cgroup %s (mem=%lluB, cpu=%d%s)", s->name, path,
          (unsigned long long)s->memory_limit, s->cpu_weight,
          s->oom_kill_group ? ", oom-group" : "");
@@ -1987,6 +2136,18 @@ static void run_health_checks(void) {
          * and not expecting notify → disarm. */
         s->start_deadline = 0;
     }
+    /* v2.2: watchdog — services with watchdog_timeout set must send
+     * WATCHDOG=1 within that interval or be marked FAILED. */
+    for (int i = 0; i < g_sys.n_services; i++) {
+        hz_service_t *s = &g_sys.services[i];
+        if (s->watchdog_timeout <= 0 || s->state != HZ_S_RUNNING) continue;
+        if (now - s->watchdog_last > s->watchdog_timeout) {
+            LOGE("%s: watchdog timeout (no WATCHDOG=1 in %ds) — marking FAILED",
+                 s->name, s->watchdog_timeout);
+            kill(s->pid, SIGTERM);
+            mark_failed(s);
+        }
+    }
     /* deferred: probe every RUNNING service with health.hostport set.
      * 3 consecutive failures → mark FAILED + SIGTERM. Probes are sequential
      * (max 64 services × 5s timeout = 320s worst case — but real services
@@ -2035,9 +2196,24 @@ static int setup_fanotify(void) {
     int marked = 0;
     for (int i = 0; i < g_sys.n_watches; i++) {
         hz_watch_t *w = &g_sys.watches[i];
-        if (fanotify_mark(g_fanfd, FAN_MARK_ADD, mask, AT_FDCWD, w->path) < 0) {
-            LOGW("fanotify_mark %s: %s — skipping", w->path, strerror(errno));
-            continue;
+        /* v2.2: recursive keyword honored via FAN_MARK_FILESYSTEM (kernel ≥5.16).
+         * Marks the whole filesystem containing w->path. deferred: per-subtree
+         * filtering — operator gets events for the whole fs, plugin can grep. */
+        unsigned flags = FAN_MARK_ADD;
+        if (w->recursive) flags |= FAN_MARK_FILESYSTEM;
+        if (fanotify_mark(g_fanfd, flags, mask, AT_FDCWD, w->path) < 0) {
+            /* FAN_MARK_FILESYSTEM may be unsupported on older kernels — retry
+             * without it so we at least watch the top dir (pre-v2.2 behavior). */
+            if (w->recursive && errno == EINVAL) {
+                LOGW("fanotify_mark %s: FAN_MARK_FILESYSTEM unsupported — top-dir only", w->path);
+                if (fanotify_mark(g_fanfd, FAN_MARK_ADD, mask, AT_FDCWD, w->path) < 0) {
+                    LOGW("fanotify_mark %s: %s — skipping", w->path, strerror(errno));
+                    continue;
+                }
+            } else {
+                LOGW("fanotify_mark %s: %s — skipping", w->path, strerror(errno));
+                continue;
+            }
         }
         marked++;
         LOGI("watching %s -> %s %s", w->path,

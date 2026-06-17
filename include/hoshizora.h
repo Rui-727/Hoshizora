@@ -76,10 +76,11 @@ typedef enum {
  * no OCI runtime compat — that's containerd's job. Hoshizora just supervises
  * the resulting process tree. */
 typedef struct {
-    int  new_ns;              /* 1 = unshare(CLONE_NEWNS|NEWNET|NEWPID) */
+    int  new_ns;              /* 1 = unshare(CLONE_NEWNS|NEWNET|NEWPID|NEWIPC|NEWUTS) */
     char rootfs[HZ_MAX_PATH]; /* empty = no pivot_root */
     char binds[HZ_MAX_BINDS][HZ_MAX_PATH]; /* "src:dst" entries, mounted before exec */
     int  n_binds;
+    int  readonly;            /* v2.2: 1 = remount rootfs MS_RDONLY after pivot */
 } hz_container_t;
 
 typedef struct {
@@ -112,6 +113,20 @@ typedef struct {
                                  * Pairs with timeout_start — timer disarms on READY. */
     hz_container_t container;   /* v2.0: namespace + rootfs + binds */
     char     listens[HZ_MAX_LISTENS][HZ_MAX_STR]; /* v2.0: socket activation — "0.0.0.0:80" or "/path/to/unix.sock" */
+    /* v2.2: cgroup v2 extras */
+    int      io_weight;         /* 1-10000; 0 = default (cgroup v2 io.weight) */
+    unsigned long long memory_high; /* bytes; 0 = no soft limit (cgroup v2 memory.high) */
+    int      cpu_max_quota;     /* microseconds per period; 0 = no quota (cgroup v2 cpu.max "quota period") */
+    int      cpu_max_period;    /* period in microseconds; default 100000 (100ms) */
+    /* v2.2: security */
+    int      no_new_privs;      /* 1 = prctl(PR_SET_NO_NEW_PRIVS) in child before exec */
+    uid_t    run_as_uid;        /* 0 = inherit; else setuid before exec */
+    gid_t    run_as_gid;        /* 0 = inherit; else setgid before exec */
+    /* v2.2: lifecycle hooks */
+    char     pre_start[HZ_MAX_PATH];  /* shell command, run before start_service forks */
+    char     post_stop[HZ_MAX_PATH];  /* shell command, run after stop_service reaps */
+    /* v2.2: watchdog — service sends WATCHDOG=1 every Ns, else FAILED */
+    int      watchdog_timeout;  /* 0 = disabled; else max seconds between WATCHDOG=1 */
 
     /* runtime */
     hz_state_t state;
@@ -124,12 +139,14 @@ typedef struct {
     int        listen_fds[HZ_MAX_LISTENS]; /* bound listening fds, -1 = unused */
     int        n_listen_fds;
     int        notify_ready;     /* runtime: 1 = service sent READY=1 */
+    time_t     watchdog_last;    /* runtime: mono_now() of last WATCHDOG=1 */
 } hz_service_t;
 
 typedef struct {
     char              path[HZ_MAX_PATH];
     char              service[HZ_MAX_NAME];
     hz_watch_action_t action;
+    int               recursive;  /* v2.2: 1 = FAN_MARK_FILESYSTEM (whole fs) */
     /* deferred: `recursive` keyword accepted in config for compatibility but
      * not honored — fanotify marks top dir only. Add FAN_MARK_FILESYSTEM or
      * recursive mount-mark logic if a real config needs it. */
