@@ -3,12 +3,11 @@
 This guide walks you through testing Hoshizora safely, from "I just cloned
 the repo" to "I booted it as PID 1 in QEMU and got a login prompt".
 
-**If this is your only computer:** stop at level 2 (user namespace), or
-jump to level 4 (LFS in QEMU) if you want the real PID-1 experience.
-Levels 1, 2, and 4 are zero-risk — they never touch your boot, your real
-init, or your kernel cmdline. Level 5 (real hardware) has real brick risk;
-don't do it on a one-laptop setup unless you've proven your recovery path
-on someone else's machine.
+**Testing safely:** Levels 1 and 2 are zero-risk on any host — they never
+touch your boot, your real init, or your kernel cmdline. Level 3 (QEMU
+initramfs) and level 4 (LFS in QEMU) run in a VM — close the window =
+done, no host risk. Level 5 (real hardware) requires a tested recovery
+plan; don't do it on a box you can't afford to lose.
 
 Testing levels, safest first:
 
@@ -19,9 +18,9 @@ Testing levels, safest first:
    Full PID 1 experience, isolated VM, no real hardware risk.
 4. **Linux From Scratch (LFS) in QEMU** — build a complete Linux system
    from source in a chroot, substitute hoshizora for systemd at chapter
-   8.74, boot it in QEMU. The best real-PID-1 test bed. Zero risk to host.
+   8.78, boot it in QEMU. The safest real-PID-1 test bed.
 5. **Real hardware** — install on a test box or spare partition. Real risk,
-   real reward. **Don't do this on your only box.**
+   real reward. **Requires a tested recovery plan.**
 
 ---
 
@@ -242,14 +241,13 @@ strace /init
 ## 4. Linux From Scratch (safe real-PID-1 test bed)
 
 [LFS](https://www.linuxfromscratch.org/lfs/) is the ideal way to test
-Hoshizora as a real PID 1 without touching your daily driver. You build
-an entire Linux system from source in a chroot on your host, then boot it
-in QEMU. The LFS system is fully isolated — your Arch install is never
-at risk.
+Hoshizora as a real PID 1 without touching the host system. You build
+an entire Linux system from source in a chroot, then boot it in QEMU.
+The LFS system is fully isolated — the host is never at risk.
 
 **Why LFS is the right call here:**
 - You choose the init system (LFS chapter 8.78 builds systemd by default — skip it, install hoshizora instead)
-- You build it in a chroot — your host kernel + systemd keep running your laptop
+- You build it in a chroot — the host kernel + init keep running
 - You boot the result in QEMU — full kernel-handoff-to-init experience, no real hardware
 - If it breaks: delete the LFS partition/directory, start over. Zero recovery needed.
 
@@ -395,7 +393,7 @@ if your root filesystem is on a partition the kernel can find. For QEMU,
 create a disk image from your LFS build:
 
 ```bash
-# On your host (NOT in chroot):
+# On the host (NOT in chroot):
 # Create a 2GB sparse disk image
 truncate -s 2G /tmp/lfs-disk.img
 
@@ -424,18 +422,18 @@ lfs login:
 
 Login as root, and you're on a real LFS system with hoshizora as PID 1.
 
-### 4.7 Why this is the right test bed
+### 4.7 LFS vs other test methods
 
 | Concern                       | LFS answer                                         |
 |-------------------------------|----------------------------------------------------|
-| Brick my laptop?              | No — LFS is in a chroot/disk image, host untouched |
+| Brick my host?                | No — LFS is in a chroot/disk image, host untouched |
 | See real kernel→init handoff? | Yes — kernel boots, calls /sbin/init = hoshizora   |
 | Real PID 1 semantics?         | Yes — hoshizora is actual PID 1 in the VM          |
 | Real cgroups?                 | Yes — cgroup v2 works inside QEMU                  |
 | Real fanotify?                | Yes — QEMU has CAP_SYS_ADMIN in the guest          |
-| Recovery if broken?           | Delete /tmp/lfs-disk.img, rebuild. Zero downtime.  |
-| Disk space?                   | 2GB image, fits in your 3.5GB free                 |
-| RAM?                          | Give QEMU 1GB, leave 3GB for Arch + zram           |
+| Recovery if broken?           | Delete the disk image, rebuild. Zero downtime.     |
+| Disk                          | 2 GB image                                         |
+| RAM                           | 1 GB guest minimum                                 |
 
 ### 4.8 Iterating
 
@@ -472,8 +470,8 @@ Your Arch install is untouched.
 
 ## 5. Real hardware (real risk)
 
-For a test box or spare partition. **Do not do this on your daily driver
-without a recovery plan.**
+For a test box or spare partition. **Requires a tested recovery plan.**
+Don't do this on a system you can't afford to lose.
 
 ### Install
 
