@@ -6,6 +6,10 @@ A minimal init system (PID 1) for Linux/x86_64 with a runtime control socket.
 testing Hoshizora safely, from `make test` (sandbox) to QEMU boot to real
 hardware install.
 
+**If this is your only computer:** do levels 1 (sandbox) and 2 (user
+namespace) only. They're zero-risk. Skip real hardware unless you have a
+spare box or have proven your recovery path on someone else's machine.
+
 ## Design principles
 
 - **Modular** — features that can be compiled out or disabled at runtime.

@@ -3,15 +3,22 @@
 This guide walks you through testing Hoshizora safely, from "I just cloned
 the repo" to "I booted it as PID 1 in QEMU and got a login prompt".
 
-Three testing levels, safest first:
+**If this is your only computer:** stop at level 2 (user namespace). Levels
+1 and 2 are zero-risk — they never touch your boot, your real init, or
+your kernel cmdline. Levels 3 (QEMU) and 4 (real hardware) are also safe
+in different ways: QEMU is a VM (close the window = done), real hardware
+is the only one with real brick risk. Don't do level 4 on a one-laptop
+setup unless you've proven your recovery path on someone else's machine.
+
+Testing levels, safest first:
 
 1. **Sandbox** — `make test`, runs the self-check suite. No root, no risk.
 2. **User namespace** — `unshare -r -p -f`, fake-root PID 1 in a namespace.
-   No root needed, but no real devices/cgroups.
+   No root needed, no boot changes, no real cgroups/devices.
 3. **QEMU + initramfs** — boot a real (host) kernel with Hoshizora as init.
    Full PID 1 experience, isolated VM, no real hardware risk.
 4. **Real hardware** — install on a test box or spare partition. Real risk,
-   real reward.
+   real reward. **Don't do this on your only box.**
 
 ---
 
