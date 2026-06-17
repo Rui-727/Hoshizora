@@ -6,9 +6,11 @@ A minimal init system (PID 1) for Linux/x86_64 with a runtime control socket.
 testing Hoshizora safely, from `make test` (sandbox) to QEMU boot to real
 hardware install.
 
-**If this is your only computer:** do levels 1 (sandbox) and 2 (user
-namespace) only. They're zero-risk. Skip real hardware unless you have a
-spare box or have proven your recovery path on someone else's machine.
+**If this is your only computer:** do levels 1 (sandbox), 2 (user
+namespace), and 4 (LFS in QEMU) — all zero-risk. Skip real hardware
+(level 5) unless you have a spare box or have proven your recovery path
+on someone else's machine. LFS in QEMU gives you the full real-PID-1
+experience without touching your boot.
 
 ## Design principles
 

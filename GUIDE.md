@@ -3,12 +3,12 @@
 This guide walks you through testing Hoshizora safely, from "I just cloned
 the repo" to "I booted it as PID 1 in QEMU and got a login prompt".
 
-**If this is your only computer:** stop at level 2 (user namespace). Levels
-1 and 2 are zero-risk — they never touch your boot, your real init, or
-your kernel cmdline. Levels 3 (QEMU) and 4 (real hardware) are also safe
-in different ways: QEMU is a VM (close the window = done), real hardware
-is the only one with real brick risk. Don't do level 4 on a one-laptop
-setup unless you've proven your recovery path on someone else's machine.
+**If this is your only computer:** stop at level 2 (user namespace), or
+jump to level 4 (LFS in QEMU) if you want the real PID-1 experience.
+Levels 1, 2, and 4 are zero-risk — they never touch your boot, your real
+init, or your kernel cmdline. Level 5 (real hardware) has real brick risk;
+don't do it on a one-laptop setup unless you've proven your recovery path
+on someone else's machine.
 
 Testing levels, safest first:
 
@@ -17,7 +17,10 @@ Testing levels, safest first:
    No root needed, no boot changes, no real cgroups/devices.
 3. **QEMU + initramfs** — boot a real (host) kernel with Hoshizora as init.
    Full PID 1 experience, isolated VM, no real hardware risk.
-4. **Real hardware** — install on a test box or spare partition. Real risk,
+4. **Linux From Scratch (LFS) in QEMU** — build a complete Linux system
+   from source in a chroot, substitute hoshizora for systemd at chapter
+   8.74, boot it in QEMU. The best real-PID-1 test bed. Zero risk to host.
+5. **Real hardware** — install on a test box or spare partition. Real risk,
    real reward. **Don't do this on your only box.**
 
 ---
@@ -236,7 +239,219 @@ strace /init
 
 ---
 
-## 4. Real hardware (real risk)
+## 4. Linux From Scratch (safe real-PID-1 test bed)
+
+[LFS](https://www.linuxfromscratch.org/lfs/) is the ideal way to test
+Hoshizora as a real PID 1 without touching your daily driver. You build
+an entire Linux system from source in a chroot on your host, then boot it
+in QEMU. The LFS system is fully isolated — your Arch install is never
+at risk.
+
+**Why LFS is the right call here:**
+- You choose the init system (LFS chapter 8.74 builds systemd by default — skip it, install hoshizora instead)
+- You build it in a chroot — your host kernel + systemd keep running your laptop
+- You boot the result in QEMU — full kernel-handoff-to-init experience, no real hardware
+- If it breaks: delete the LFS partition/directory, start over. Zero recovery needed.
+
+### 4.1 Follow the LFS book up to chapter 8.73
+
+Build LFS exactly per the book (https://www.linuxfromscratch.org/lfs/).
+Stop before chapter 8.74 (Systemd). You'll have:
+- A complete base system in `/mnt/lfs` (or wherever you put it)
+- A kernel at `/mnt/lfs/boot/vmlinuz`
+- GRUB installed in the LFS root
+- Coreutils, bash, util-linux, iproute2, etc. all built and installed
+
+### 4.2 Substitute hoshizora for systemd
+
+Instead of chapter 8.74 (building systemd), do this:
+
+```bash
+# Enter the LFS chroot (per LFS book chapter 7)
+sudo ./lfs-bootscripts/enter-chroot.sh   # or whatever the book uses
+
+# Inside the chroot:
+cd /sources
+git clone https://github.com/Rui-727/Hoshizora.git
+cd Hoshizora
+make
+make install   # hoshizora → /sbin/, hzctl/hzlog/hz-event-logger → /usr/bin/
+
+# Make hoshizora the init
+ln -sf /sbin/hoshizora /sbin/init
+
+# Config
+mkdir -p /etc/hoshizora /run/hoshizora/sessions
+```
+
+### 4.3 LFS-tuned config
+
+```bash
+cat > /etc/hoshizora/system.hs << 'EOF'
+system "lfs" {
+    # Remount root RW. LFS boots with root RO by default.
+    service mount-root {
+        exec: "/bin/mount" with args ["-o", "remount,rw", "/"];
+        on-fail: shutdown;
+    }
+
+    # Mount everything in /etc/fstab
+    service mount-all {
+        exec: "/bin/mount" with args ["-a"];
+        requires: [mount-root];
+        on-fail: shutdown;
+    }
+
+    # LFS uses eudev (the systemd-udevd fork) — install it per BLFS if
+    # you want device hotplug. If you skip eudev, kernel devtmpfs still
+    # gives you basic /dev nodes.
+    service udev {
+        exec: "/sbin/udevd";
+        requires: [mount-all];
+        respawn: backoff(max = 5);
+    }
+
+    # Hostname
+    service hostname {
+        exec: "/bin/hostname" with args ["lfs"];
+        requires: [mount-all];
+    }
+
+    # Loopback
+    service net-lo {
+        exec: "/sbin/ip" with args ["link", "set", "lo", "up"];
+        requires: [mount-all];
+        on-fail: shutdown;
+    }
+
+    # Getty on tty1 — login prompt
+    service getty-tty1 {
+        exec: "/sbin/agetty" with args ["tty1", "linux"];
+        requires: [mount-all, hostname, udev];
+        respawn: backoff(max = 5);
+    }
+
+    # Serial console for QEMU -nographic
+    service getty-ttyS0 {
+        exec: "/sbin/agetty" with args ["ttyS0", "115200", "linux"];
+        requires: [mount-all, hostname, udev];
+        respawn: backoff(max = 5);
+    }
+
+    # Persistent logging
+    service hzlog {
+        exec: "/usr/bin/hzlog";
+        requires: [mount-all];
+        respawn: backoff(max = 5);
+    }
+}
+EOF
+```
+
+### 4.4 /etc/fstab for LFS
+
+The LFS book has you create this. Make sure it includes:
+
+```
+/dev/sda1  /      ext4  defaults       0 1
+proc       /proc  proc  defaults       0 0
+sysfs      /sys   sysfs defaults       0 0
+devtmpfs   /dev   devtmpfs defaults    0 0
+tmpfs      /run   tmpfs defaults       0 0
+```
+
+### 4.5 /etc/passwd + /etc/shadow
+
+LFS creates these. Verify root has a password (or no password for testing):
+
+```bash
+# Inside chroot:
+passwd   # set root password, or just leave blank for testing
+```
+
+### 4.6 Boot in QEMU
+
+LFS doesn't need a separate initramfs — the kernel mounts root directly
+if your root filesystem is on a partition the kernel can find. For QEMU,
+create a disk image from your LFS build:
+
+```bash
+# On your host (NOT in chroot):
+# Create a 2GB sparse disk image
+truncate -s 2G /tmp/lfs-disk.img
+
+# Format + mount it
+mkfs.ext4 /tmp/lfs-disk.img
+sudo mkdir /mnt/lfs-disk
+sudo mount -o loop /tmp/lfs-disk.img /mnt/lfs-disk
+
+# Copy your LFS build into it
+sudo cp -a /mnt/lfs/* /mnt/lfs-disk/
+sudo umount /mnt/lfs-disk
+
+# Boot in QEMU
+qemu-system-x86_64 \
+    -kernel /mnt/lfs/boot/vmlinuz \
+    -append "root=/dev/sda console=ttyS0 init=/sbin/hoshizora panic=-1" \
+    -drive file=/tmp/lfs-disk.img,format=raw,if=virtio \
+    -nographic -m 1G -no-reboot
+```
+
+You should see kernel boot messages, then hoshizora log lines, then:
+
+```
+lfs login:
+```
+
+Login as root, and you're on a real LFS system with hoshizora as PID 1.
+
+### 4.7 Why this is the right test bed
+
+| Concern                       | LFS answer                                         |
+|-------------------------------|----------------------------------------------------|
+| Brick my laptop?              | No — LFS is in a chroot/disk image, host untouched |
+| See real kernel→init handoff? | Yes — kernel boots, calls /sbin/init = hoshizora   |
+| Real PID 1 semantics?         | Yes — hoshizora is actual PID 1 in the VM          |
+| Real cgroups?                 | Yes — cgroup v2 works inside QEMU                  |
+| Real fanotify?                | Yes — QEMU has CAP_SYS_ADMIN in the guest          |
+| Recovery if broken?           | Delete /tmp/lfs-disk.img, rebuild. Zero downtime.  |
+| Disk space?                   | 2GB image, fits in your 3.5GB free                 |
+| RAM?                          | Give QEMU 1GB, leave 3GB for Arch + zram           |
+
+### 4.8 Iterating
+
+To change the config without rebuilding the disk image:
+
+```bash
+# Boot LFS in QEMU
+# At the login prompt, login as root
+vi /etc/hoshizora/system.hs
+hzctl daemon-reload         # re-reads config, applies diff
+hzctl list                  # see what changed
+```
+
+Or mount the image on the host and edit directly:
+
+```bash
+sudo mount -o loop /tmp/lfs-disk.img /mnt/lfs-disk
+sudo vi /mnt/lfs-disk/etc/hoshizora/system.hs
+sudo umount /mnt/lfs-disk
+```
+
+### 4.9 Cleaning up
+
+When you're done:
+
+```bash
+rm /tmp/lfs-disk.img
+sudo rm -rf /mnt/lfs   # if you want to delete the LFS build entirely
+```
+
+Your Arch install is untouched.
+
+---
+
+## 5. Real hardware (real risk)
 
 For a test box or spare partition. **Do not do this on your daily driver
 without a recovery plan.**
