@@ -32,40 +32,40 @@ echo "--- list (initial) ---"
 $HZCTL list
 
 echo "--- status bad_exec (should be failed) ---"
-$HZCTL status bad_exec
+$HZCTL bad_exec status
 sleep 0.3
-$HZCTL status bad_exec
+$HZCTL bad_exec status
 
 echo "--- status true_one ---"
-$HZCTL status true_one
+$HZCTL true_one status
 
-echo "--- Gentoo-style: true_one status (name-first) ---"
+echo "--- SOV: true_one status (name-first) ---"
 $HZCTL true_one status
 
 echo "--- stop true_two ---"
-$HZCTL stop true_two
+$HZCTL true_two stop
 sleep 0.3
 
 echo "--- list (after stop) ---"
 $HZCTL list
 
 echo "--- start true_two ---"
-$HZCTL start true_two
+$HZCTL true_two start
 sleep 0.3
 
 echo "--- list (after start) ---"
 $HZCTL list
 
-echo "--- Gentoo-style: true_two stop (name-first) ---"
+echo "--- SOV: true_two stop (name-first) ---"
 $HZCTL true_two stop
 sleep 0.2
 
 echo "--- enable/disable/show cycle ---"
-$HZCTL disable true_one
+$HZCTL true_one disable
 $HZCTL show
 $HZCTL true_one start    # should skip — disabled
 sleep 0.1
-$HZCTL enable true_one
+$HZCTL true_one enable
 
 echo "--- logs 5 (in-memory ring) ---"
 $HZCTL logs 5

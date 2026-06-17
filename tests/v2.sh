@@ -31,7 +31,7 @@ echo "--- list ---"
 $HZCTL list
 
 echo "--- start target v2-target ---"
-$HZCTL start v2-target
+$HZCTL v2-target start
 sleep 0.5
 
 echo "--- list (after target start) ---"

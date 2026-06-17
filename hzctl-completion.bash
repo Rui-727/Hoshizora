@@ -1,38 +1,36 @@
-# Bash completion for hzctl.
+# Bash completion for hzctl (SOV: <name> <action>).
 # Install: cp hzctl-completion.bash /etc/bash_completion.d/hzctl
 # Or: source hzctl-completion.bash in your .bashrc
 
 _hzctl() {
-    local cur prev cmds services
-    COMPREPLY=()
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local cur prev words cword
+    _init_completion || return
+    local top_cmds="list status show logs reload daemon-reload shutdown poweroff reboot help"
+    local actions="start stop restart reload status enable disable"
 
-    cmds="list status start stop restart reload daemon-reload enable disable show logs shutdown poweroff reboot help"
-
-    # If we're completing the first word, suggest commands.
-    if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
+    # First word: either a top-level command OR a service/target name.
+    if [ "$cword" -eq 1 ]; then
+        local services
+        services=$(hzctl list 2>/dev/null | awk 'NF>=1 && $1!~/^\(/ {print $1}')
+        COMPREPLY=( $(compgen -W "$top_cmds $services" -- "$cur") )
         return 0
     fi
 
-    # If the previous word is a command that takes a service name, complete
-    # from the running service list. deferred: calls hzctl list — slow if
-    # hoshizora isn't running. Could cache, but YAGNI for an interactive shell.
-    case "$prev" in
-        start|stop|restart|reload|status|enable|disable)
-            services=$(hzctl list 2>/dev/null | awk 'NF>=1 && $1!~/^\(/ {print $1}')
-            COMPREPLY=( $(compgen -W "$services" -- "$cur") )
-            return 0
-            ;;
-    esac
-
-    # Gentoo-style: if first word is a service name, suggest actions.
-    if [ "$COMP_CWORD" -eq 2 ]; then
-        case "${COMP_WORDS[1]}" in
-            start|stop|restart|reload|status) ;;
+    # Second word: if the first word wasn't a top-level command, it's a
+    # service name — complete the action verb.
+    if [ "$cword" -eq 2 ]; then
+        case "$prev" in
+            list|status|show|logs|reload|daemon-reload|shutdown|poweroff|reboot|help)
+                # Top-level command — complete its args if any (logs N, status <name>).
+                case "$prev" in
+                    status) COMPREPLY=( $(compgen -W "$(hzctl list 2>/dev/null | awk 'NF>=1 && $1!~/^\(/ {print $1}')" -- "$cur") ); return 0 ;;
+                    logs)   COMPREPLY=( $(compgen -W "10 20 50 100" -- "$cur") ); return 0 ;;
+                    *)      return 0 ;;
+                esac
+                ;;
             *)
-                COMPREPLY=( $(compgen -W "start stop restart status reload" -- "$cur") )
+                # First word was a service/target name — complete the action.
+                COMPREPLY=( $(compgen -W "$actions" -- "$cur") )
                 return 0
                 ;;
         esac

@@ -55,33 +55,35 @@ forward-looking items still on the deferral list.
 
 ## Control socket protocol
 
-Text protocol, one connection per command. **Both verb orders work** — action-first (`hzctl start nginx`) or name-first Gentoo-style (`hzctl nginx start`). The `hzctl` client (built alongside `hoshizora`) is a dumb pass-through; the server reorders as needed.
+Text protocol, one connection per command. **SOV (Subject-Object-Verb) is the only order** — `<name> <action>`. The first word is either a top-level command (no subject — `list`, `show`, `logs`, `shutdown`, etc.) or a service/target name (subject), with the second word being the action (verb). The `hzctl` client is a dumb pass-through.
+
+Why SOV: `hzctl nginx start` reads as "Nginx. Start. Now." — direct, declarative, no ceremony. Action-first (`hzctl start nginx`) reads as "Excuse me, could you please start nginx if you have a moment?" — too polite for PID 1.
 
 ```bash
-# Action-first (systemd-ish) — both forms work for all commands:
+# SOV — subject first, verb last:
+hzctl <name> start               # start a stopped service
+hzctl <name> stop                # stop + block respawn
+hzctl <name> restart             # stop + start
+hzctl <name> reload              # per-service SIGHUP
+hzctl <name> status              # status of one service
+hzctl <name> enable              # mark for autostart (ephemeral)
+hzctl <name> disable             # skip at boot / reload (ephemeral)
+hzctl <target> start             # start all services in a target
+
+# Top-level commands (no subject):
 hzctl list                       # list all services + state
-hzctl status [name]              # status of one or all services
-hzctl start <name>
-hzctl stop <name>
-hzctl restart <name>
-hzctl reload [<name>]            # no arg = daemon-reload; arg = SIGHUP service
-hzctl daemon-reload              # explicit alias for re-reading config
-hzctl enable <name>              # mark for autostart (ephemeral)
-hzctl disable <name>             # skip at boot / reload (ephemeral)
-hzctl show                       # list services + enabled state (rc-update show flavor)
+hzctl status [<name>]            # status of one or all
+hzctl show                       # list services + enabled state
+hzctl reload                     # daemon-reload (re-read config)
+hzctl daemon-reload              # explicit alias for above
 hzctl logs [N]                   # last N log lines (default 50)
 hzctl shutdown | poweroff        # sync + reboot(RB_POWER_OFF) — refuses if sessions open
 hzctl reboot                     # sync + reboot(RB_AUTOBOOT) — refuses if sessions open
 hzctl shutdown --force           # override the session gate
 hzctl help
-
-# Gentoo-style name-first (rc-service flavor):
-hzctl <name> start
-hzctl <name> stop
-hzctl <name> restart
-hzctl <name> status
-hzctl <name> reload              # per-service SIGHUP
 ```
+
+For action-first users: the `hzctl-systemctl` wrapper translates `systemctl start X` → `hzctl X start`.
 
 Socket path: `/run/hoshizora/control` (override with `HZ_CTL_PATH` env var). Permissions: `0660`, owned by root — only root can issue commands by default.
 
@@ -128,7 +130,7 @@ make test
 
 Runs `tests/testsuite.sh`, which executes eight self-checks in sequence and tallies PASS/FAIL (currently 65 PASS / 0 FAIL):
 
-- **`tests/core.sh`** against `tests/core.hs` (two `/bin/true` services with a dependency + one bad-exec service) — exercises every control-socket command in both verb orderings (action-first AND Gentoo name-first SOV), exercises `enable`/`disable`/`show`/`logs`/`daemon-reload`, asserts each step, and verifies the bad-exec service goes to FAILED without a respawn storm. Also verifies `reboot(2)` is invoked on shutdown (expected to fail with EPERM in non-PID-1 test env).
+- **`tests/core.sh`** against `tests/core.hs` (two `/bin/true` services with a dependency + one bad-exec service) — exercises every control-socket command in SOV form (`<name> <action>`), exercises `enable`/`disable`/`show`/`logs`/`daemon-reload`, asserts each step, and verifies the bad-exec service goes to FAILED without a respawn storm. Also verifies `reboot(2)` is invoked on shutdown (expected to fail with EPERM in non-PID-1 test env).
 - **`tests/features.sh`** against `tests/features.hs` — verifies the parser accepts `memory-limit`, `cpu-weight`, `oom-kill`, `log`, `start-condition` (single + AND forms), `watch` blocks, `backoff(max=N)` extraction, `network_ready` virtual intent (verified at runtime against `/sys/class/net/`), AND that per-service log files are actually created on disk when services run.
 - **`tests/onfail.sh`** against `tests/onfail.hs` — exercises the on-fail: runtime path end-to-end: a `/bin/false` service with `backoff(max=1)` and `on-fail: shutdown` crashes, the respawn timer (CLOCK_MONOTONIC) fires, start_service hits the backoff guard, `mark_failed()` calls `on_fail_trigger()` which logs `on-fail: shutdown` and sets `g_shutdown=1`, and hoshizora exits cleanly without external SIGTERM.
 - **`tests/cron.sh`** against `tests/cron.hs` — verifies `every: "2s"` scheduling: a service that touches a marker file fires within 6s, re-arms after clean exit.

@@ -2,15 +2,18 @@
  * deferred: one file, one job. Connects to a Unix socket, sends one line
  * from argv, prints response. No flags except --force for shutdown gating.
  *
- * Usage: hzctl <command> [args...]
+ * Usage: hzctl <command> [args...]   (SOV — Subject Object Verb)
  *   hzctl list
  *   hzctl status
- *   hzctl status nginx
- *   hzctl start nginx
- *   hzctl stop nginx
- *   hzctl restart nginx
- *   hzctl reload
- *   hzctl shutdown [--force]    # refuses if /run/hoshizora/sessions/* has entries
+ *   hzctl nginx status              # SOV: subject first, verb last
+ *   hzctl nginx start
+ *   hzctl nginx stop
+ *   hzctl nginx restart
+ *   hzctl nginx reload              # per-service SIGHUP
+ *   hzctl reload                    # daemon-reload (no subject)
+ *   hzctl nginx enable | disable
+ *   hzctl multi-user start          # start all services in target 'multi-user'
+ *   hzctl shutdown [--force]        # refuses if /run/hoshizora/sessions/* has entries
  *
  * Default socket: /run/hoshizora/control (override with HZ_CTL_PATH env).
  * Default session dir: /run/hoshizora/sessions (override with HZ_SESSION_DIR).

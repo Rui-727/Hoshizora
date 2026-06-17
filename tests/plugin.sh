@@ -38,7 +38,7 @@ PLUGPID=$!
 sleep 0.4  # let it connect
 
 echo "--- restart the service (generates START event) ---"
-$HZCTL restart simple
+$HZCTL simple restart
 sleep 0.3
 
 # Plugin should still be running (didn't crash on event processing)

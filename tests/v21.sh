@@ -54,7 +54,7 @@ SUB_PID=$!
 sleep 0.3
 
 echo "--- restart the service (should generate START event) ---"
-HZ_CTL_PATH="$SOCK" $HZCTL restart simple
+HZ_CTL_PATH="$SOCK" $HZCTL simple restart
 sleep 0.3
 
 echo "--- shutdown gate: with a fake session ---"

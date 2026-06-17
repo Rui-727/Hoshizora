@@ -2300,22 +2300,6 @@ static const char *state_str(hz_state_t st) {
     return "?";
 }
 
-static int is_top_level_cmd(const char *cmd) {
-    /* ponytail: top-level commands that take no service-name arg in slot 1.
-     * Anything else is treated as a service name (Gentoo-style `<name> <action>`).
-     * Note: `reload` is in here because `reload <name>` means per-service SIGHUP
-     * (action-first form), while `<name> reload` is reordered to the same thing. */
-    static const char *top[] = {
-        "list", "status", "enable", "disable", "show",
-        "start", "stop", "restart",
-        "daemon-reload", "reload", "logs", "shutdown", "poweroff", "reboot",
-        "help", "?", NULL
-    };
-    for (int i = 0; top[i]; i++)
-        if (strcmp(cmd, top[i]) == 0) return 1;
-    return 0;
-}
-
 static void handle_control_client(int cfd) {
     char buf[1024];
     ssize_t n = read(cfd, buf, sizeof(buf) - 1);
@@ -2326,27 +2310,40 @@ static void handle_control_client(int cfd) {
     char *arg = strchr(buf, ' ');
     if (arg) { *arg++ = 0; while (*arg == ' ') arg++; }
 
-    /* Gentoo-style `<name> <action>`: if first word isn't a top-level command,
-     * treat it as a service name and reorder so action leads. Ponytail: matches
-     * OpenRC's `rc-service <name> <action>` flavor without the `rc-service`
-     * prefix. Both `hzctl nginx start` and `hzctl start nginx` work. */
-    static char reordered[1024];
-    if (*cmd && !is_top_level_cmd(cmd) && arg && *arg) {
-        char *action = arg;
-        char *rest = strchr(action, ' ');
-        if (rest) { *rest++ = 0; while (*rest == ' ') rest++; }
-        snprintf(reordered, sizeof(reordered), "%s %s%s%s",
-                 action, cmd, rest ? " " : "", rest ? rest : "");
-        char *new_arg = strchr(reordered, ' ');
-        if (new_arg) { *new_arg++ = 0; while (*new_arg == ' ') new_arg++; }
-        cmd = reordered;
-        arg = new_arg;
+    /* v2.3: SOV-only protocol. <name> <action> [<args>]. The first word is
+     * either a known top-level command (no subject — list/show/logs/etc.)
+     * OR a service name (subject), with the second word being the action
+     * (verb). Action-first form (`start nginx`) is no longer auto-reordered;
+     * if a user types it, `start` is treated as a service name and the
+     * command fails with "no such service". deferred: a wrapper script
+     * (hzctl-systemctl) can translate action-first if anyone needs it. */
+    char *name = NULL;     /* subject (service name or target name) */
+    char *action = cmd;    /* verb (or first word if no subject) */
+    char *action_arg = arg;/* optional 3rd word (e.g. logs N, reload X) */
+
+    /* If cmd isn't a known top-level command, treat it as a subject and
+     * pull the action from the second word. */
+    static const char *top[] = {
+        "list", "status", "show", "logs", "daemon-reload", "reload",
+        "shutdown", "poweroff", "reboot", "help", "?", NULL
+    };
+    int is_top = 0;
+    for (int i = 0; top[i]; i++) if (strcmp(cmd, top[i]) == 0) { is_top = 1; break; }
+    if (!is_top && arg && *arg) {
+        name = cmd;
+        action = arg;
+        action_arg = strchr(action, ' ');
+        if (action_arg) { *action_arg++ = 0; while (*action_arg == ' ') action_arg++; }
+        else action_arg = NULL;
     }
 
-    if (strcmp(cmd, "list") == 0 || strcmp(cmd, "status") == 0) {
+    /* v2.3: SOV dispatch. `action` is the verb; `name` is the subject
+     * (service or target, NULL for self-only commands); `action_arg` is
+     * the optional object (e.g. `logs N`). */
+    if (strcmp(action, "list") == 0 || strcmp(action, "status") == 0) {
         char line[HZ_MAX_NAME + 160];
-        if (arg && *arg) {
-            hz_service_t *s = find_service(arg);
+        if (name && *name) {
+            hz_service_t *s = find_service(name);
             if (!s) { ctl_send(cfd, "no such service"); close(cfd); return; }
             snprintf(line, sizeof(line), "%-20s %-10s pid=%-6d restarts=%d%s%s",
                      s->name, state_str(s->state), (int)s->pid, s->restart_count,
@@ -2366,8 +2363,7 @@ static void handle_control_client(int cfd) {
             }
             if (g_sys.n_services == 0) ctl_send(cfd, "(no services)");
         }
-    } else if (strcmp(cmd, "show") == 0) {
-        /* Gentoo rc-update show flavor — list services + enabled state */
+    } else if (strcmp(action, "show") == 0) {
         char line[HZ_MAX_NAME + 64];
         for (int i = 0; i < g_sys.n_services; i++) {
             hz_service_t *s = &g_sys.services[i];
@@ -2376,12 +2372,12 @@ static void handle_control_client(int cfd) {
             ctl_send(cfd, line);
         }
         if (g_sys.n_services == 0) ctl_send(cfd, "(no services)");
-    } else if (strcmp(cmd, "start") == 0 && arg) {
-        hz_service_t *s = find_service(arg);
+    } else if (strcmp(action, "start") == 0 && name) {
+        hz_service_t *s = find_service(name);
         if (s) { start_service(s); ctl_send(cfd, "ok"); }
         else {
             /* v2.0: target — start all services in the named target. */
-            hz_target_t *tg = find_target(arg);
+            hz_target_t *tg = find_target(name);
             if (tg) {
                 int started = 0;
                 for (int i = 0; i < tg->n_services; i++) {
@@ -2395,19 +2391,18 @@ static void handle_control_client(int cfd) {
                 ctl_send(cfd, "no such service or target");
             }
         }
-    } else if (strcmp(cmd, "stop") == 0 && arg) {
-        hz_service_t *s = find_service(arg);
+    } else if (strcmp(action, "stop") == 0 && name) {
+        hz_service_t *s = find_service(name);
         if (!s) ctl_send(cfd, "no such service");
         else { stop_service(s); ctl_send(cfd, "ok"); }
-    } else if (strcmp(cmd, "restart") == 0 && arg) {
-        hz_service_t *s = find_service(arg);
+    } else if (strcmp(action, "restart") == 0 && name) {
+        hz_service_t *s = find_service(name);
         if (!s) ctl_send(cfd, "no such service");
         else { stop_service(s); start_service(s); ctl_send(cfd, "ok"); }
-    } else if (strcmp(cmd, "reload") == 0) {
-        /* `reload` (no arg) = daemon-reload (re-read config)
-         * `reload <name>`    = per-service SIGHUP */
-        if (arg && *arg) {
-            hz_service_t *s = find_service(arg);
+    } else if (strcmp(action, "reload") == 0) {
+        /* `<name> reload` = per-service SIGHUP; `reload` (no name) = daemon-reload. */
+        if (name && *name) {
+            hz_service_t *s = find_service(name);
             if (!s) ctl_send(cfd, "no such service");
             else if (s->pid > 0) { kill(s->pid, SIGHUP); ctl_send(cfd, "ok"); }
             else ctl_send(cfd, "not running");
@@ -2415,51 +2410,44 @@ static void handle_control_client(int cfd) {
             reload_config(g_cfg_path);
             ctl_send(cfd, "ok");
         }
-    } else if (strcmp(cmd, "daemon-reload") == 0) {
+    } else if (strcmp(action, "daemon-reload") == 0) {
         reload_config(g_cfg_path);
         ctl_send(cfd, "ok");
-    } else if (strcmp(cmd, "enable") == 0 && arg) {
-        /* remove the disabled-marker file → service is enabled */
+    } else if (strcmp(action, "enable") == 0 && name) {
         char p[HZ_MAX_PATH];
-        enabled_path_for(arg, p, sizeof(p));
-        if (unlink(p) != 0 && errno != ENOENT) {
-            ctl_send(cfd, "error");
-        } else {
-            ctl_send(cfd, "ok");
-        }
-    } else if (strcmp(cmd, "disable") == 0 && arg) {
+        enabled_path_for(name, p, sizeof(p));
+        if (unlink(p) != 0 && errno != ENOENT) ctl_send(cfd, "error");
+        else ctl_send(cfd, "ok");
+    } else if (strcmp(action, "disable") == 0 && name) {
         char p[HZ_MAX_PATH];
-        enabled_path_for(arg, p, sizeof(p));
-        /* mkdir -p <ctl-dir>/enabled/ — mkdir_parents_of handles <ctl-dir>,
-         * then we explicitly mkdir the `enabled` subdir. */
+        enabled_path_for(name, p, sizeof(p));
         mkdir_parents_of(p);  /* creates <ctl-dir>/ and <ctl-dir>/enabled/ */
         int fd2 = open(p, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (fd2 < 0) ctl_send(cfd, "error");
         else { close(fd2); ctl_send(cfd, "ok"); }
-    } else if (strcmp(cmd, "logs") == 0) {
-        int lines = (arg && *arg) ? atoi(arg) : 50;
+    } else if (strcmp(action, "logs") == 0) {
+        int lines = (action_arg && *action_arg) ? atoi(action_arg) : 50;
         logs_dump(cfd, lines);
-    } else if (strcmp(cmd, "shutdown") == 0 || strcmp(cmd, "poweroff") == 0) {
+    } else if (strcmp(action, "shutdown") == 0 || strcmp(action, "poweroff") == 0) {
         g_reboot_target = 0; g_shutdown = 1;
         ctl_send(cfd, "powering off");
-    } else if (strcmp(cmd, "reboot") == 0) {
+    } else if (strcmp(action, "reboot") == 0) {
         g_reboot_target = 1; g_shutdown = 1;
         ctl_send(cfd, "rebooting");
-    } else if (strcmp(cmd, "help") == 0 || strcmp(cmd, "?") == 0) {
-        ctl_send(cfd, "commands (action-first OR name-first both work):");
-        ctl_send(cfd, "  list                       list all services + state");
-        ctl_send(cfd, "  status [<name>]            status of one or all services");
-        ctl_send(cfd, "  start <name> | <name> start");
-        ctl_send(cfd, "  stop <name>  | <name> stop");
-        ctl_send(cfd, "  restart <name> | <name> restart");
-        ctl_send(cfd, "  reload [<name>]            no arg = daemon-reload, arg = SIGHUP service");
-        ctl_send(cfd, "  daemon-reload              re-read config");
-        ctl_send(cfd, "  enable <name>              mark for autostart (ephemeral)");
-        ctl_send(cfd, "  disable <name>             skip at boot / reload (ephemeral)");
-        ctl_send(cfd, "  show                       list services + enabled state");
-        ctl_send(cfd, "  logs [N]                   last N log lines (default 50)");
-        ctl_send(cfd, "  shutdown | poweroff        sync + power off");
-        ctl_send(cfd, "  reboot                     sync + reboot");
+    } else if (strcmp(action, "help") == 0 || strcmp(action, "?") == 0) {
+        ctl_send(cfd, "commands (SOV: <name> <action> [<arg>]):");
+        ctl_send(cfd, "  <name> start | stop | restart");
+        ctl_send(cfd, "  <name> reload                    per-service SIGHUP");
+        ctl_send(cfd, "  <name> status | enable | disable");
+        ctl_send(cfd, "  list                             list all services + state");
+        ctl_send(cfd, "  status [<name>]                  status of one or all");
+        ctl_send(cfd, "  show                             list services + enabled state");
+        ctl_send(cfd, "  reload                           daemon-reload (re-read config)");
+        ctl_send(cfd, "  daemon-reload                    explicit alias for above");
+        ctl_send(cfd, "  logs [N]                         last N log lines (default 50)");
+        ctl_send(cfd, "  shutdown | poweroff              sync + power off");
+        ctl_send(cfd, "  reboot                           sync + reboot");
+        ctl_send(cfd, "  <target> start                   start all services in target");
     } else {
         ctl_send(cfd, "unknown command (try 'help')");
     }

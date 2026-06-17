@@ -291,29 +291,40 @@ Hoshizora is the supervisor. Everything else is a service.
 
 ---
 
-## Final CLI surface (v2.0 — current)
+## Final CLI surface (v2.3 — current)
+
+SOV (Subject-Object-Verb) is the only order. `<name> <action>` for service-
+specific commands; bare commands for self-only operations.
 
 ```
+# SOV — subject first, verb last:
+hzctl <name> start               # start a stopped service
+hzctl <name> stop                # stop + block respawn
+hzctl <name> restart             # stop + start
+hzctl <name> reload              # per-service SIGHUP
+hzctl <name> status              # status of one service
+hzctl <name> enable              # mark for autostart (ephemeral)
+hzctl <name> disable             # skip at boot / reload (ephemeral)
+hzctl <target> start             # start all services in a target
+
+# Top-level commands (no subject):
 hzctl list                       # all services + state
-hzctl status [name]              # one or all
-hzctl start <name|target>        # start a stopped service or all members of a target
-hzctl stop <name>                # stop + block respawn
-hzctl restart <name>             # stop + start
-hzctl reload <name>              # SIGHUP the service (per-service reload)
+hzctl status [<name>]            # one or all
+hzctl show                       # list services + enabled state
 hzctl reload                     # daemon-reload (re-read config)
 hzctl daemon-reload              # explicit alias for above
-hzctl enable <name>              # mark for autostart (default state)
-hzctl disable <name>             # skip at boot / reload
-hzctl show                       # list services + enabled state
 hzctl logs [N]                   # last N log lines (default 50)
-hzctl shutdown                   # power off (sync + reboot(RB_POWER_OFF))
-hzctl poweroff                   # alias for shutdown
-hzctl reboot                     # restart (sync + reboot(RB_AUTOBOOT))
-hzctl help                       # this list
+hzctl shutdown | poweroff        # sync + reboot(RB_POWER_OFF) — refuses if sessions open
+hzctl shutdown --force           # override the session gate
+hzctl reboot                     # sync + reboot(RB_AUTOBOOT)
+hzctl help
 ```
+
+For action-first users: the `hzctl-systemctl` wrapper translates `systemctl
+start X` → `hzctl X start`.
 
 Future candidates (deferred until triggered):
 ```
-hzctl isolate <target>           # start target, stop everything else
-hzctl status <target>            # target's services as a group
+hzctl <target> isolate           # start target, stop everything else
+hzctl <target> status            # target's services as a group
 ```
