@@ -1,6 +1,6 @@
 #!/bin/bash
 # hzlog self-check: bind /dev/log (overridden), send a syslog line via logger(1)
-# or sendto(2), assert it appears in the log file. ponytail: one line in, one
+# or sendto(2), assert it appears in the log file. deferred: one line in, one
 # line out, done.
 cd "$(dirname "$0")/.."   # repo root, where ./hzlog lives
 

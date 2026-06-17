@@ -16,7 +16,7 @@ system "self-check" {
         respawn: backoff(max = 3, base = 1s);
     }
 
-    # ponytail: exec-failure test — bad path, child exits 127. Should go to
+    # deferred: exec-failure test — bad path, child exits 127. Should go to
     # FAILED without respawning. Without the fix, would respawn 3x instantly.
     service bad_exec {
         exec: "/nonexistent/path";

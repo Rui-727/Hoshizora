@@ -27,13 +27,13 @@ system "features-test" {
         # AND-of-two-builtins form — both must be true to start.
         # link-up("lo") is true on any Linux box with networking.
         start-condition: file-exists("/bin/true") and link-up("lo");
-        # ponytail: on-fail: restart(limited_service) — if dep_service goes
+        # deferred: on-fail: restart(limited_service) — if dep_service goes
         # FAILED, restart its dep (limited_service) too. Parser-only check here;
         # runtime firing is exercised by tests/onfail.sh.
         on-fail: restart(limited_service);
     }
 
-    # ponytail: network_ready is a VIRTUAL intent — no service block defines
+    # deferred: network_ready is a VIRTUAL intent — no service block defines
     # it. Without the virtual-dep code, this would log "unknown dep" and skip
     # the check. With it, the dep is satisfied (sandbox has eth0 IFF_UP).
     service net_consumer {

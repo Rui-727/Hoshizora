@@ -1,5 +1,5 @@
-/* hzlog — ponytail syslog collector.
- * ponytail: one job. Bind /dev/log, recv datagrams, prepend receive-time,
+/* hzlog — deferred syslog collector.
+ * deferred: one job. Bind /dev/log, recv datagrams, prepend receive-time,
  * append to /var/log/messages. No rotation (logrotate's job), no per-facility
  * split (awk's job), no PRI parsing (glibc syslog(3) already formats the line).
  *
@@ -48,7 +48,7 @@ int main(void) {
         perror("bind");
         return 1;
     }
-    /* ponytail: 0666 so any UID can log. syslog is a trust boundary by
+    /* deferred: 0666 so any UID can log. syslog is a trust boundary by
      * convention — anyone on the box can already write to it via logger(1).
      * Tighten with chown+chmod when running multi-tenant. */
     chmod(sock_path, 0666);
@@ -71,7 +71,7 @@ int main(void) {
         if (n < 0) {
             if (errno == EINTR) continue;
             perror("recv");
-            continue;  /* ponytail: don't die on a bad recv — one bad client shouldn't kill the log daemon */
+            continue;  /* deferred: don't die on a bad recv — one bad client shouldn't kill the log daemon */
         }
         if (n == 0) continue;
         buf[n] = 0;
@@ -86,11 +86,11 @@ int main(void) {
         localtime_r(&now, &tm);
         strftime(tstamp, sizeof(tstamp), "%b %e %H:%M:%S", &tm);
         /* one dprintf — appended line: "<tstamp> <raw datagram>\n".
-         * ponytail: dprintf replaces snprintf+write pair + the 8KB stack buffer. */
+         * deferred: dprintf replaces snprintf+write pair + the 8KB stack buffer. */
         int ln = dprintf(lfd, "%s %s\n", tstamp, buf);
         if (ln < 0 && errno != EINTR) {
             perror("write");
-            /* ponytail: keep going — log daemon stopping is worse than losing a line. */
+            /* deferred: keep going — log daemon stopping is worse than losing a line. */
         }
     }
     /* not reached — recv loop above never exits */

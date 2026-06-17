@@ -102,7 +102,7 @@ export HZ_NOTIFY_PATH="$HOME/.local/run/notify"
 #    -f = fork so the new PID 1 is hoshizora, not unshare itself
 #    NOTE: do NOT use --mount-proc — it needs CAP_SYS_ADMIN in the
 #    parent namespace, which non-root doesn't have.
-unshare -r -p -f ./hoshizora system.hs &
+unshare -r -p -f ./hoshizora examples/system.bootable.hs &
 HZ_PID=$!
 
 # 4. Wait for the control socket to appear
@@ -177,7 +177,7 @@ make
 2. Creates a minimal initramfs at `/tmp/hz-initramfs.cpio.gz` containing:
    - `/init` → hoshizora binary
    - `/bin/busybox` + symlinks for `sh`, `mount`, `agetty`, `hostname`, `ip`, etc.
-   - `/etc/hoshizora/system.hs` → copied from `system.bootable.hs`
+   - `/etc/hoshizora/system.hs` → copied from `examples/system.bootable.hs`
    - `/etc/passwd`, `/etc/shadow` (root, no password), `/etc/fstab`, `/etc/hostname`
 3. Boots QEMU with the host kernel + the initramfs:
    ```
@@ -529,11 +529,11 @@ sudo make install                          # hoshizora → /sbin/, hzctl + hzlog
 
 # Config
 sudo mkdir -p /etc/hoshizora
-sudo cp system.bootable.hs /etc/hoshizora/system.hs
+sudo cp examples/system.bootable.hs /etc/hoshizora/system.hs
 sudo vi /etc/hoshizora/system.hs           # adjust services for your box
 
 # Session tracker (optional, for login ACLs)
-sudo cp hz-session /etc/hoshizora/hz-session
+sudo cp scripts/hz-session /etc/hoshizora/hz-session
 sudo chmod 0755 /etc/hoshizora/hz-session
 sudo mkdir -p /run/hoshizora/sessions
 # Add to /etc/pam.d/login:

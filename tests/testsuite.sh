@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hoshizora testsuite — single entry point for the whole test surface.
-# ponytail: one shell script, no test framework. Runs each self-check in
+# deferred: one shell script, no test framework. Runs each self-check in
 # sequence, captures PASS/FAIL counts, exits non-zero if any FAIL.
 #
 # Layout (each self-check has its own .hs config + its own .sh, paired):

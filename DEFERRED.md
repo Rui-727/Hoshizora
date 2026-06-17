@@ -98,12 +98,6 @@ priority.
 - **`init.c:1757`** — one-time warning if cgroup v2 isn't available but config asks. `no-trigger`
 - **`init.c:1811`** — PID 1 returning from main = kernel panic ("Attempted to kill. `no-trigger`
 
-## `ARCHITECTURE.md` (deleted v2.0.1 — merged into README)
-
-These markers referred to a 704-line doc that duplicated README content + source
-comments. File deleted in the v2.0.1 audit cleanup; markers below are kept for
-history. The `deferred:` comments they referenced still live in `init.c`.
-
 ## `Makefile` (2 markers)
 
 - **`Makefile:2`** — one binary, no bootloader, no host compiler, no .hsb step. `no-trigger`

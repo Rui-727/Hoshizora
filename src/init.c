@@ -11,7 +11,7 @@
  * probes (tcp-probe), parallel shutdown + reload, in-memory log ring,
  * enable/disable ephemeral state, poweroff/reboot via reboot(2).
  *
- * Skipped (ponytail: add when asked): io_uring (poll() over 4 fds suffices),
+ * Skipped (deferred: add when asked): io_uring (poll() over 4 fds suffices),
  * transactional snapshot, capabilities, non-root operator access.
  *
  * Build: make
@@ -134,7 +134,7 @@ static time_t mono_now(void);  /* v2.2: needed by handle_notify_event + start_se
 
 /* ---------------------------------------------------------------------------
  * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
- * ponytail: 8 KiB ring, byte-addressed with wrap. Walked backward for tail-N.
+ * deferred: 8 KiB ring, byte-addressed with wrap. Walked backward for tail-N.
  * ------------------------------------------------------------------------- */
 static void ctl_send(int fd, const char *s);  /* forward decl — defined in CONTROL SOCKET section */
 #define HZ_LOG_RING_SIZE 8192
@@ -612,7 +612,7 @@ static void logs_dump(int cfd, int n_lines) {
  * CONFIG PARSER — token-stream walker for the system.hs subset.
  * Recognizes: service NAME { exec, requires, respawn, environment }.
  * Ignores everything else (intents, watch, starfield, memory-limit, etc.)
- * with a ponytail comment marking them as YAGNI.
+ * with a deferred comment marking them as YAGNI.
  * ------------------------------------------------------------------------- */
 
 typedef enum {
@@ -785,7 +785,7 @@ static int parse_hostport(const char *str, char *host_out, int host_sz, int *por
     return 0;
 }
 
-/* ponytail: parse size suffixes for memory-limit. Returns 0 on parse error.
+/* deferred: parse size suffixes for memory-limit. Returns 0 on parse error.
  * Accepts: 256MiB, 1GiB, 512KiB, 1024 (bare = bytes). Decimal suffixes (KB/MB)
  * dropped — README documents binary only, cgroup v2 memory.max wants bytes. */
 static unsigned long long parse_size(const char *s) {
@@ -802,7 +802,7 @@ static unsigned long long parse_size(const char *s) {
 }
 
 /* parse a string list: [ "a", "b" ] or [ ident, ident ] */
-/* ponytail: generic over element size — used for both deps[HZ_MAX_NAME]
+/* deferred: generic over element size — used for both deps[HZ_MAX_NAME]
  * and args[HZ_MAX_STR]. One function, two callers, no template needed. */
 static int parse_string_list(lexer_t *L, void *out, size_t elem_size, int max, int *n) {
     char *base = (char*)out;
@@ -898,7 +898,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->max_restarts = 5;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             /* accept: backoff(max = N, base = Xs); or just ;
-             * ponytail: extract max=N into max_restarts. base= ignored —
+             * deferred: extract max=N into max_restarts. base= ignored —
              * respawn uses linear restart_count-second delay, capped at 30. */
             int depth = 0;
             int seen_max = 0;
@@ -923,7 +923,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t)) return -1;
             /* accept STRING ("256MiB") or IDENT/NUMBER (256MiB unquoted).
-             * ponytail: lexer splits `256MiB` into NUMBER "256" + IDENT "MiB"
+             * deferred: lexer splits `256MiB` into NUMBER "256" + IDENT "MiB"
              * — re-combine so parse_size sees the suffix. */
             char val[HZ_MAX_STR] = {0};
             if (t.kind == TOK_STRING) {
@@ -955,7 +955,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
                 return -1;
             }
         } else if (strcmp(t.text, "oom-kill") == 0) {
-            /* ponytail: oom-kill: group; — writes memory.oom.group=1 in cgroup.
+            /* deferred: oom-kill: group; — writes memory.oom.group=1 in cgroup.
              * No value variant (oom-kill: process) — group is the only sane
              * choice for a supervised service. Add when a config needs the
              * per-process behavior. */
@@ -966,7 +966,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             }
             s->oom_kill_group = 1;
         } else if (strcmp(t.text, "log") == 0) {
-            /* ponytail: log: "path"; — redirect service stdout+stderr to this
+            /* deferred: log: "path"; — redirect service stdout+stderr to this
              * file. Default (no log: directive) is /var/log/hoshizora/<name>.log
              * if that dir exists, else inherit hoshizora's stderr. Empty string
              * disables redirection. */
@@ -979,7 +979,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             strncpy(s->log_path, t.text, HZ_MAX_PATH - 1);
             s->log_path[HZ_MAX_PATH - 1] = 0;
         } else if (strcmp(t.text, "start-condition") == 0) {
-            /* ponytail: parse up to 2 builtins joined by `and`. Grammar:
+            /* deferred: parse up to 2 builtins joined by `and`. Grammar:
              *   start-condition: BUILTIN ( "arg" ) [ and BUILTIN ( "arg" ) ] ;
              * BUILTIN ∈ { file-exists, link-up, fs-mounted }. Anything else
              * (arithmetic, if/then/else, OR) → parse error. */
@@ -1014,7 +1014,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
                 break;
             }
         } else if (strcmp(t.text, "healthy") == 0) {
-            /* ponytail: healthy: tcp-probe("host:port", Ns) only. */
+            /* deferred: healthy: tcp-probe("host:port", Ns) only. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "tcp-probe") != 0) {
                 LOGE("%s: healthy: only tcp-probe(...) supported", s->name);
@@ -1044,7 +1044,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ')') return -1;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "on-fail") == 0) {
-            /* ponytail: on-fail: restart(name) | shutdown;
+            /* deferred: on-fail: restart(name) | shutdown;
              * Two builtins, no args beyond the target name. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT) return -1;
@@ -1265,7 +1265,7 @@ static int parse_watch_block(lexer_t *L, hz_watch_t *w) {
  * `watch STRING [recursive] {`, ignore everything else. Non-service/watch
  * constructs (system "name" {...}, intents {...}, starfield {...}) are
  * skipped naturally — their braces and strings get filtered as non-IDENT
- * tokens, their closing } is consumed by the punctuation case. ponytail: no
+ * tokens, their closing } is consumed by the punctuation case. deferred: no
  * depth tracking needed. */
 static int parse_config(lexer_t *L) {
     tok_t t;
@@ -1412,7 +1412,7 @@ static int parse_config(lexer_t *L) {
             LOGI("loaded target %s (%d services)", tg->name, tg->n_services);
             continue;
         }
-        /* ponytail: all other idents (system, intents, starfield,
+        /* deferred: all other idents (system, intents, starfield,
          * on-change, reload, restart, recursive, enabled, log-size,
          * exclude-paths, every, max, base, backoff, capabilities,
          * transactional, snapshot, start-condition,
@@ -1473,13 +1473,13 @@ static hz_target_t *find_target(const char *name) {
 
 /* ---------------------------------------------------------------------------
  * START-CONDITION + HEALTH PROBES
- * ponytail: 3 builtins, AND-only. tcp-probe via connect() with SO_SNDTIMEO.
+ * deferred: 3 builtins, AND-only. tcp-probe via connect() with SO_SNDTIMEO.
  * ------------------------------------------------------------------------- */
 static int sc_check_one(hz_sc_kind_t kind, const char *arg) {
     switch (kind) {
     case HZ_SC_FILE_EXISTS: return access(arg, F_OK) == 0;
     case HZ_SC_LINK_UP: {
-        /* ponytail: operstate says "unknown" for lo on Linux (not "up"), so
+        /* deferred: operstate says "unknown" for lo on Linux (not "up"), so
          * check the flags file for IFF_UP (0x1) instead — works for all ifaces. */
         char p[HZ_MAX_PATH + 64];
         snprintf(p, sizeof(p), "/sys/class/net/%s/flags", arg);
@@ -1521,7 +1521,7 @@ static int evaluate_sc(const hz_sc_t *sc) {
     return 1;
 }
 
-/* ponytail: tcp-probe — connect() with SO_SNDTIMEO. Returns 0 on success
+/* deferred: tcp-probe — connect() with SO_SNDTIMEO. Returns 0 on success
  * (connection established), -1 on failure/timeout. Doesn't send/receive
  * anything — just checks the listener is alive. */
 static int tcp_probe(const char *hostport, int timeout_s) {
@@ -1541,7 +1541,7 @@ static int tcp_probe(const char *hostport, int timeout_s) {
     return r == 0 ? 0 : -1;
 }
 
-/* ponytail: ephemeral enable/disable state. A file at <ctl-dir>/enabled/<name>
+/* deferred: ephemeral enable/disable state. A file at <ctl-dir>/enabled/<name>
  * means "disabled". File absent = enabled. Tied to the control socket's parent
  * dir so it works in test mode (HZ_CTL_PATH override) too. Survives reload,
  * not reboot. For persistent enable/disable, edit the config. */
@@ -1562,7 +1562,7 @@ static int service_enabled(const hz_service_t *s) {
     return access(p, F_OK) != 0;  /* file absent = enabled */
 }
 
-/* ponytail: virtual intents — built-in dep names that resolve to runtime
+/* deferred: virtual intents — built-in dep names that resolve to runtime
  * conditions, not services. Currently just `network_ready`: true iff any
  * non-lo interface has IFF_UP set. system.hs uses `requires: [network_ready]`
  * without defining a network_ready service — this makes that work without
@@ -1599,7 +1599,7 @@ static int virtual_dep_running(const char *name) {
     return ready;
 }
 
-/* ponytail: on-fail dispatcher. Called from mark_failed() whenever a service
+/* deferred: on-fail dispatcher. Called from mark_failed() whenever a service
  * transitions to FAILED. RESTART stops + starts target; SHUTDOWN sets the
  * g_shutdown flag (main loop will pick it up next iteration). No cycle guard
  * — operator's config, their bug to see in logs. */
@@ -1618,7 +1618,7 @@ static void on_fail_trigger(hz_service_t *s) {
     start_service(t);
 }
 
-/* ponytail: single FAILED-transition site → on-fail fires consistently.
+/* deferred: single FAILED-transition site → on-fail fires consistently.
  * Replaces scattered `s->state = HZ_S_FAILED;` assignments. */
 static void mark_failed(hz_service_t *s) {
     s->state = HZ_S_FAILED;
@@ -1631,7 +1631,7 @@ static int start_service(hz_service_t *s) {
     s->manual_stop = 0;
     s->respawn_at = 0;
 
-    /* ponytail: ephemeral enable/disable marker. `disable X` writes the file;
+    /* deferred: ephemeral enable/disable marker. `disable X` writes the file;
      * we skip start until `enable X` removes it. Operator can still `stop X`
      * while disabled — start is the only thing blocked. */
     if (!service_enabled(s)) {
@@ -1639,7 +1639,7 @@ static int start_service(hz_service_t *s) {
         return 0;
     }
 
-    /* ponytail: start-condition — if false, skip start (stay STOPPED).
+    /* deferred: start-condition — if false, skip start (stay STOPPED).
      * Re-evaluated each call so the operator can `start X` again once the
      * condition becomes true (e.g. mount appeared). */
     if (s->start_cond.kind1 != HZ_SC_NONE && !evaluate_sc(&s->start_cond)) {
@@ -1651,7 +1651,7 @@ static int start_service(hz_service_t *s) {
     for (int i = 0; i < s->n_deps; i++) {
         hz_service_t *d = find_service(s->deps[i]);
         if (!d) {
-            /* ponytail: not a real service — check virtual intents
+            /* deferred: not a real service — check virtual intents
              * (network_ready). If true, treat dep as satisfied; if false,
              * refuse to start (this service would fail without networking).
              * If -1 (not virtual either), warn and continue — preserves
@@ -1682,7 +1682,7 @@ static int start_service(hz_service_t *s) {
         return -1;
     }
 
-    /* ponytail: cgroup v2 — create per-service dir, write limits. No-op if
+    /* deferred: cgroup v2 — create per-service dir, write limits. No-op if
      * cgroup v2 isn't mounted (LOGW once at startup). */
     cgroup_setup_for(s);
 
@@ -1823,7 +1823,7 @@ static int stop_service(hz_service_t *s) {
     return 0;
 }
 
-/* ponytail: signals handled via signalfd in the main poll loop — see
+/* deferred: signals handled via signalfd in the main poll loop — see
  * setup_signalfd() and handle_signal() further down. No async-signal
  * handlers, no flag globals (except g_shutdown for the main loop test). */
 
@@ -1832,7 +1832,7 @@ static void reload_config(const char *path);
 /* ---------------------------------------------------------------------------
  * CGROUPS v2 — per-service resource limits. If cgroup v2 isn't mounted at
  * /sys/fs/cgroup, all functions are no-ops and services run unconstrained.
- * ponytail: mkdir per-service dir, write memory.max + cpu.weight, assign child
+ * deferred: mkdir per-service dir, write memory.max + cpu.weight, assign child
  * pid to cgroup.procs. Teardown rmdir's the dir after the process exits.
  * ------------------------------------------------------------------------- */
 static int cgroup_v2_available(void) {
@@ -1923,7 +1923,7 @@ static void reap_children(void) {
                             s->name, pid, status, crashed);
             s->pid = 0;
             if (g_sys.shutting_down) { s->state = HZ_S_STOPPED; break; }
-            /* ponytail: exit 127 = execve failed (ENOENT/EACCES/etc). Respawning
+            /* deferred: exit 127 = execve failed (ENOENT/EACCES/etc). Respawning
              * would hit the same error instantly, max_restarts times, before
              * giving up. Mark FAILED and let the operator fix the config. */
             if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
@@ -1947,12 +1947,12 @@ static void reap_children(void) {
             }
             if (crashed && s->respawn && !s->manual_stop) {
                 s->restart_count++;
-                /* ponytail: state → STOPPED so start_service will accept the
+                /* deferred: state → STOPPED so start_service will accept the
                  * respawn. Without this, state stays RUNNING from before the
                  * crash and start_service's `if (state == RUNNING) return 0`
                  * short-circuits, blocking respawn forever. */
                 s->state = HZ_S_STOPPED;
-                /* ponytail: linear backoff = restart_count seconds, capped at 30.
+                /* deferred: linear backoff = restart_count seconds, capped at 30.
                  * Non-blocking — scheduled via respawn_at, fired by main loop's
                  * timerfd. Old blocking sleep() would freeze the control socket. */
                 int delay = s->restart_count;
@@ -1963,7 +1963,7 @@ static void reap_children(void) {
             } else if (!crashed || s->manual_stop) {
                 s->state = HZ_S_STOPPED;
                 if (!crashed) s->restart_count = 0;
-                /* ponytail: cron job finished cleanly — re-arm next fire.
+                /* deferred: cron job finished cleanly — re-arm next fire.
                  * Crashed cron jobs fall through to the FAILED/respawn path
                  * below; they don't auto-re-arm. */
                 if (!crashed && s->cron_interval > 0 && !s->manual_stop) {
@@ -1979,7 +1979,7 @@ static void reap_children(void) {
     }
 }
 
-/* ponytail: parallel stop — SIGTERM all, wait once (5s), SIGKILL stragglers.
+/* deferred: parallel stop — SIGTERM all, wait once (5s), SIGKILL stragglers.
  * Used by both shutdown_all (all services, reverse order) and reload (changed
  * services, list order). Single implementation — old serial path called
  * stop_service per service, each blocking up to 5s → 64 services = 320s of
@@ -2024,7 +2024,7 @@ static void stop_parallel(hz_service_t **list, int n, const char *why) {
     }
 }
 
-/* ponytail: shutdown_all = build reverse list of all services, call stop_parallel. */
+/* deferred: shutdown_all = build reverse list of all services, call stop_parallel. */
 static void shutdown_all(void) {
     g_sys.shutting_down = 1;
     LOGI("shutdown: stopping %d services", g_sys.n_services);
@@ -2040,7 +2040,7 @@ static void shutdown_all(void) {
  * SIGNAFD + CONTROL SOCKET + TIMERFD setup
  * ------------------------------------------------------------------------- */
 
-/* ponytail: signalfd integrates signals into the poll loop — no async-signal
+/* deferred: signalfd integrates signals into the poll loop — no async-signal
  * handlers, no self-pipe. Block the signals first so they queue for the fd.
  * SFD_NONBLOCK so handle_signal's drain loop doesn't block when empty. */
 static int setup_signalfd(void) {
@@ -2059,7 +2059,7 @@ static int setup_signalfd(void) {
 }
 
 static int setup_control_socket(void) {
-    /* ponytail: env var override for tests; default /run/hoshizora/control */
+    /* deferred: env var override for tests; default /run/hoshizora/control */
     const char *env = getenv("HZ_CTL_PATH");
     if (env && *env) {
         strncpy(g_ctl_path, env, sizeof(g_ctl_path) - 1);
@@ -2081,7 +2081,7 @@ static int setup_control_socket(void) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, g_ctl_path, sizeof(addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
-    /* ponytail: 0660 — root-only by default. Add a hoshizora group + chgrp
+    /* deferred: 0660 — root-only by default. Add a hoshizora group + chgrp
      * when non-root operators need access. */
     chmod(g_ctl_path, 0660);
     listen(fd, 8);
@@ -2090,7 +2090,7 @@ static int setup_control_socket(void) {
 }
 
 static int setup_reload_timer(void) {
-    /* ponytail: CLOCK_MONOTONIC — immune to NTP step adjustments and avoids
+    /* deferred: CLOCK_MONOTONIC — immune to NTP step adjustments and avoids
      * the integer-second truncation bug that CLOCK_REALTIME + TFD_TIMER_ABSTIME
      * had with respawn_at <= now checks (timer fires at X.5s, time(NULL)
      * returns X, respawn_at = X+1 → never respawns, busy-loops). */
@@ -2098,7 +2098,7 @@ static int setup_reload_timer(void) {
     return g_reloadfd;
 }
 
-/* ponytail: monotonic clock in seconds — used for respawn_at.
+/* deferred: monotonic clock in seconds — used for respawn_at.
  * Wall clock (time(NULL)) is wrong here: NTP can step it backward, and
  * integer-second truncation breaks absolute-time timer comparisons. */
 static time_t mono_now(void) {
@@ -2108,7 +2108,7 @@ static time_t mono_now(void) {
 }
 
 static int setup_health_timer(void) {
-    /* ponytail: separate timerfd fired every 5s for health probes. Reuses the
+    /* deferred: separate timerfd fired every 5s for health probes. Reuses the
      * interval mode of timerfd (it_value = first fire, it_interval = repeat). */
     g_healthfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
     if (g_healthfd < 0) return -1;
@@ -2184,7 +2184,7 @@ static void run_health_checks(void) {
 
 /* ---------------------------------------------------------------------------
  * FANOTIFY — file watches. Single fd, mark all paths, longest-prefix-match
- * events to watches. ponytail: needs CAP_SYS_ADMIN. If init isn't running as
+ * events to watches. deferred: needs CAP_SYS_ADMIN. If init isn't running as
  * root (test mode), fanotify_init fails and watches are inert — services still
  * run, just no auto-reload/restart on file changes.
  * ------------------------------------------------------------------------- */
@@ -2240,7 +2240,7 @@ static void handle_fanotify_event(void) {
     char buf[8192];
     ssize_t n = read(g_fanfd, buf, sizeof(buf));
     if (n <= 0) return;
-    /* ponytail: walk fixed-size event metadata records */
+    /* deferred: walk fixed-size event metadata records */
     for (char *p = buf; p + sizeof(struct fanotify_event_metadata) <= buf + n;
          p += ((struct fanotify_event_metadata*)p)->event_len) {
         struct fanotify_event_metadata *e = (struct fanotify_event_metadata*)p;
@@ -2279,7 +2279,7 @@ static void handle_fanotify_event(void) {
 
 /* ---------------------------------------------------------------------------
  * CONTROL SOCKET PROTOCOL
- * ponytail: text protocol, one connection per command, single-line response
+ * deferred: text protocol, one connection per command, single-line response
  * (except `list` which emits one line per service). No framing, no JSON.
  *
  * Commands:
@@ -2462,7 +2462,7 @@ static void handle_control_client(int cfd) {
 
 /* ---------------------------------------------------------------------------
  * RELOAD — re-read config, diff, apply.
- * ponytail: snapshot running pids by name, re-read, walk new config to adopt
+ * deferred: snapshot running pids by name, re-read, walk new config to adopt
  * or restart, walk snapshot to kill removed. ~30 lines, no clever diffing.
  * ------------------------------------------------------------------------- */
 
@@ -2478,7 +2478,7 @@ static int service_spec_changed(const hz_service_t *a, const hz_service_t *b) {
     if (a->respawn != b->respawn) return 1;
     if (a->n_deps != b->n_deps) return 1;
     for (int i = 0; i < a->n_deps; i++) if (strcmp(a->deps[i], b->deps[i]) != 0) return 1;
-    /* ponytail: spec changes that affect the running process — restart on diff.
+    /* deferred: spec changes that affect the running process — restart on diff.
      * memory/cpu/oom-kill/log_path/on-fail are start-time effects: cgroup
      * setup, log redirect, on-fail target wiring. start-cond/healthy are NOT
      * compared — they're re-evaluated at every start / every 5s probe, so a
@@ -2496,7 +2496,7 @@ static int service_spec_changed(const hz_service_t *a, const hz_service_t *b) {
 
 static void reload_config(const char *path) {
     LOGI("reload: re-reading %s", path);
-    /* ponytail: snapshot pre-reload services (full structs) — used for both
+    /* deferred: snapshot pre-reload services (full structs) — used for both
      * spec-change detection AND runtime-field adoption. Old code had snap[]
      * (subset of fields) AND old[] (full structs) for the same purpose —
      * snap[] dropped, old[] serves both. */
@@ -2579,7 +2579,7 @@ static void arm_respawn_timer(void) {
     time_t earliest = 0;
     for (int i = 0; i < g_sys.n_services; i++) {
         time_t r = g_sys.services[i].respawn_at;
-        /* ponytail: cron_next reuses the same timerfd — a cron job firing is
+        /* deferred: cron_next reuses the same timerfd — a cron job firing is
          * just another "wake me at time T" pending event. One timer, two
          * reasons to fire. */
         if (g_sys.services[i].cron_next) r = r ? (r < g_sys.services[i].cron_next ? r : g_sys.services[i].cron_next) : g_sys.services[i].cron_next;
@@ -2607,7 +2607,7 @@ static void fire_due_respawns(void) {
             s->respawn_at = 0;
             if (!s->manual_stop) start_service(s);
         }
-        /* ponytail: cron fire — start_service sets state=RUNNING; reap_children
+        /* deferred: cron fire — start_service sets state=RUNNING; reap_children
          * sees the clean exit, re-arms cron_next = now + cron_interval. Cron
          * jobs don't use respawn_at — they're not crashes. */
         if (s->cron_interval > 0 && s->cron_next != 0 && s->cron_next <= now
@@ -2658,7 +2658,7 @@ int main(int argc, char **argv) {
     openlog("hoshizora", LOG_PID | LOG_NDELAY, LOG_DAEMON);  /* v2.0: journal integration */
     drop_capabilities();     /* v2.0: drop caps we don't need (warns if it fails) */
 
-    /* ponytail: one-time warning if cgroup v2 isn't available but config asks
+    /* deferred: one-time warning if cgroup v2 isn't available but config asks
      * for memory/cpu limits. Without this, limits silently don't apply. */
     if (!cgroup_v2_available()) {
         for (int i = 0; i < g_sys.n_services; i++) {
@@ -2673,7 +2673,7 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < g_sys.n_services; i++) {
         hz_service_t *s = &g_sys.services[i];
-        /* ponytail: cron jobs don't auto-start — they schedule their first fire
+        /* deferred: cron jobs don't auto-start — they schedule their first fire
          * via cron_next, the timer fires start_service when due. */
         if (s->cron_interval > 0) {
             s->cron_next = mono_now() + s->cron_interval;
@@ -2732,7 +2732,7 @@ int main(int argc, char **argv) {
     unlink(g_event_path);  /* v2.1: clean up event socket */
     sync();
     closelog();  /* v2.1: flush syslog connection before reboot */
-    /* ponytail: PID 1 returning from main = kernel panic ("Attempted to kill
+    /* deferred: PID 1 returning from main = kernel panic ("Attempted to kill
      * init!"). Must call reboot(2) to actually halt. RB_POWER_OFF on real
      * hardware powers the machine off; on VMs without ACPI shutdown it falls
      * back to halt. RB_AUTOBOOT reboots. */

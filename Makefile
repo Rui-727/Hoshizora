@@ -46,4 +46,9 @@ install: hoshizora hzctl hzlog hz-event-logger
 	cp hzctl /usr/bin/hzctl
 	cp hzlog /usr/bin/hzlog
 	cp hz-event-logger /usr/bin/hz-event-logger
+	# Shell scripts (hz-session, hzctl-systemctl, completions) are not auto-installed.
+	# Copy manually: scripts/hz-session → /etc/hoshizora/hz-session (pam_exec)
+	#                scripts/hzctl-systemctl → /usr/local/bin/systemctl (optional wrapper)
+	#                scripts/hzctl-completion.bash → /etc/bash_completion.d/hzctl
+	#                scripts/hzctl-completion.zsh → /usr/share/zsh/site-functions/_hzctl
 	@echo "Installed to /sbin/hoshizora - set as init= in kernel cmdline or symlink /sbin/init"
