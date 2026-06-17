@@ -1030,6 +1030,12 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->health.hostport[HZ_MAX_STR - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ',') return -1;
             if (!next_token(L, &t) || t.kind != TOK_NUMBER) return -1;
+            /* v2.3: accept "5s" form — lexer splits into NUMBER "5" + IDENT "s".
+             * Peek and consume the trailing IDENT if it's a single-char unit. */
+            lexer_t save = *L; tok_t t2;
+            if (next_token(&save, &t2) && t2.kind == TOK_IDENT && strlen(t2.text) <= 2) {
+                *L = save;  /* consume the unit token */
+            }
             s->health.timeout_s = atoi(t.text);
             if (s->health.timeout_s < 1 || s->health.timeout_s > 60) {
                 LOGE("%s: healthy timeout %s out of range (1-60s)", s->name, t.text);
