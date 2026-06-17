@@ -10,17 +10,17 @@ LDFLAGS = -static
 
 all: hoshizora hzctl hzlog hz-event-logger
 
-hoshizora: init.c include/hoshizora.h
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ init.c
+hoshizora: src/init.c include/hoshizora.h
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/init.c
 
-hzctl: hzctl.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ hzctl.c
+hzctl: src/hzctl.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/hzctl.c
 
-hzlog: hzlog.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ hzlog.c
+hzlog: src/hzlog.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/hzlog.c
 
-hz-event-logger: hz-event-logger.c
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ hz-event-logger.c
+hz-event-logger: src/hz-event-logger.c
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ src/hz-event-logger.c
 
 # deferred: ONE testsuite entry point. Runs each self-check in sequence,
 # tallies PASS/FAIL. Each check has its own .hs config covering a slice:

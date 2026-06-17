@@ -245,25 +245,39 @@ Hoshizora as a real PID 1 without touching the host system. You build
 an entire Linux system from source in a chroot, then boot it in QEMU.
 The LFS system is fully isolated — the host is never at risk.
 
+**Which LFS edition to use:** The standard LFS (`stable-systemd`) builds
+full systemd as the init at chapter 8.78. A better starting point is the
+[LFS-OpenRC fork](https://www.linuxfromscratch.org/~zeckma/lfs-openrc/13.0/),
+which replaces systemd with OpenRC. It still extracts udev from the systemd
+source (chapter 8.78 = "Udev from Systemd-259.1") but uses OpenRC (chapter
+8.81) as the init instead of full systemd. Follow the LFS-OpenRC book, but
+install hoshizora instead of OpenRC at chapter 8.81.
+
 **Why LFS is the right call here:**
-- You choose the init system (LFS chapter 8.78 builds systemd by default — skip it, install hoshizora instead)
+- You choose the init system — follow LFS-OpenRC, skip chapter 8.81 (OpenRC), install hoshizora instead
 - You build it in a chroot — the host kernel + init keep running
 - You boot the result in QEMU — full kernel-handoff-to-init experience, no real hardware
 - If it breaks: delete the LFS partition/directory, start over. Zero recovery needed.
 
-### 4.1 Follow the LFS book up to chapter 8.77
+### 4.1 Follow the LFS-OpenRC book through chapter 8.80
 
-Build LFS exactly per the book (https://www.linuxfromscratch.org/lfs/view/stable-systemd/).
-Stop before chapter 8.78 (Systemd-259.1). You'll have:
+Build LFS per the [LFS-OpenRC 13.0 book](https://www.linuxfromscratch.org/~zeckma/lfs-openrc/13.0/).
+This fork differs from standard LFS in two key places:
+- Chapter 8.78 builds **Udev from Systemd-259.1** (extracts just udev, not full systemd)
+- Chapter 8.81 builds **OpenRC-0.63** as the init (instead of full systemd)
+
+Do everything through chapter 8.80 (Sysklogd-2.7.2). Stop before 8.81
+(OpenRC). You'll have:
 - A complete base system in `/mnt/lfs` (or wherever you put it)
-- GRUB installed in the LFS root (chapter 8.66)
-- Coreutils, bash, util-linux, iproute2 (chapter 8.68), kbd (chapter 8.69),
-  tar (chapter 8.73), etc. all built and installed
+- GRUB installed (chapter 8.66)
+- Coreutils, bash, util-linux (chapter 8.79), iproute2 (chapter 8.68),
+  kbd (chapter 8.69), tar (chapter 8.73), udev (chapter 8.78), sysklogd
+  (chapter 8.80) — all built and installed
 
 Then continue through chapter 9 (System Configuration) and chapter 10
-(Making the LFS System Bootable), but skip the systemd-specific parts:
+(Making the LFS System Bootable), but skip the OpenRC-specific parts:
 
-- **Chapter 9 — do everything EXCEPT** 9.10 (Systemd Usage and Configuration)
+- **Chapter 9 — do everything EXCEPT** 9.5 (OpenRC Usage and Configuration)
 - **Chapter 10 — do all of it:**
   - 10.2 Creating the /etc/fstab File
   - 10.3 Linux-6.18.10 (build the kernel)
@@ -274,9 +288,9 @@ After chapter 10 you'll have:
 - A valid `/etc/fstab` (inside the LFS root)
 - GRUB configured (we won't use it for QEMU, but it doesn't hurt)
 
-### 4.2 Substitute hoshizora for systemd
+### 4.2 Substitute hoshizora for OpenRC
 
-Instead of chapter 8.78 (building Systemd-259.1), do this:
+Instead of chapter 8.81 (building OpenRC-0.63), do this:
 
 ```bash
 # Enter the LFS chroot (per LFS book chapter 7.4 — exact command from the book)
@@ -303,12 +317,46 @@ mkdir -p /etc/hoshizora /run/hoshizora/sessions
 
 ### 4.3 LFS-tuned config
 
+The boot sequence follows the pattern documented by dinit's
+[DINIT-AS-INIT.md](https://github.com/davmac314/dinit/blob/master/doc/linux/DINIT-AS-INIT.md):
+early filesystems → udev → hwclock → rootfs check → remount RW → cleanup →
+syslog → networking → getty.
+
 ```bash
 cat > /etc/hoshizora/system.hs << 'EOF'
 system "lfs" {
-    # Remount root RW. LFS boots with root RO by default.
+    # Early virtual filesystems — should already be mounted by initramfs,
+    # but mount them here as a safety net. See dinit's doc on why
+    # /proc, /sys, /dev, /run must be up before anything else.
+    service early-mounts {
+        exec: "/bin/sh" with args ["-c", "mount -t proc proc /proc 2>/dev/null; mount -t sysfs sysfs /sys 2>/dev/null; mount -t devtmpfs devtmpfs /dev 2>/dev/null; mount -t tmpfs tmpfs /run 2>/dev/null; true"];
+        on-fail: shutdown;
+    }
+
+    # udev — LFS-OpenRC chapter 8.78 extracts udev from systemd source.
+    # udevd needs /sys and /dev already mounted.
+    service udev {
+        exec: "/sbin/udevd";
+        requires: [early-mounts];
+        respawn: backoff(max = 5);
+    }
+
+    # Trigger coldplug — process devices that existed before udevd started
+    service udev-trigger {
+        exec: "/usr/bin/udevadm" with args ["trigger", "--action=add"];
+        requires: [udev];
+    }
+
+    # Set system clock from hardware RTC
+    service hwclock {
+        exec: "/sbin/hwclock" with args ["--hctosys"];
+        requires: [udev-trigger];
+    }
+
+    # Remount root RW. LFS boots with root RO.
     service mount-root {
         exec: "/bin/mount" with args ["-o", "remount,rw", "/"];
+        requires: [hwclock];
         on-fail: shutdown;
     }
 
@@ -317,15 +365,6 @@ system "lfs" {
         exec: "/bin/mount" with args ["-a"];
         requires: [mount-root];
         on-fail: shutdown;
-    }
-
-    # LFS uses eudev (the systemd-udevd fork) — install it per BLFS if
-    # you want device hotplug. If you skip eudev, kernel devtmpfs still
-    # gives you basic /dev nodes.
-    service udev {
-        exec: "/sbin/udevd";
-        requires: [mount-all];
-        respawn: backoff(max = 5);
     }
 
     # Hostname
@@ -341,24 +380,31 @@ system "lfs" {
         on-fail: shutdown;
     }
 
-    # Getty on tty1 — login prompt
+    # Sysklogd — LFS-OpenRC chapter 8.80
+    service syslog {
+        exec: "/sbin/syslogd";
+        requires: [mount-all];
+        respawn: backoff(max = 5);
+    }
+
+    # Getty on tty1 — THE login prompt
     service getty-tty1 {
         exec: "/sbin/agetty" with args ["tty1", "linux"];
-        requires: [mount-all, hostname, udev];
+        requires: [mount-all, hostname, udev-trigger, syslog];
         respawn: backoff(max = 5);
     }
 
     # Serial console for QEMU -nographic
     service getty-ttyS0 {
         exec: "/sbin/agetty" with args ["ttyS0", "115200", "linux"];
-        requires: [mount-all, hostname, udev];
+        requires: [mount-all, hostname, udev-trigger, syslog];
         respawn: backoff(max = 5);
     }
 
-    # Persistent logging
+    # Hoshizora's own log collector
     service hzlog {
         exec: "/usr/bin/hzlog";
-        requires: [mount-all];
+        requires: [mount-all, syslog];
         respawn: backoff(max = 5);
     }
 }

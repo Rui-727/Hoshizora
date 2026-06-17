@@ -10,14 +10,6 @@
 *.pyc
 __pycache__/
 
-# Dependencies
-node_modules/
-venv/
-.venv/
-.env
-.env.local
-*.env.*
-
 # Logs and temp files
 *.log
 *.tmp
@@ -40,9 +32,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Hoshizora build outputs
+# Hoshizora build outputs (binaries produced by make)
 /hoshizora
 /hzctl
 /hzlog
 /hz-event-logger
-/hzctl-systemctl

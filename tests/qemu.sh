@@ -61,7 +61,7 @@ for cmd in sh mount umount hostname ip agetty login ls cat echo mkdir rmdir \
 done
 
 # Config — use the bootable example
-cp system.bootable.hs "$WORKDIR/etc/hoshizora/system.hs"
+cp examples/system.bootable.hs "$WORKDIR/etc/hoshizora/system.hs"
 
 # /etc/fstab — minimal. Kernel mounts root RO; hoshizora remounts RW.
 cat > "$WORKDIR/etc/fstab" << 'EOF'
