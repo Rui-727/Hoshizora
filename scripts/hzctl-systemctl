@@ -1,0 +1,77 @@
+#!/bin/bash
+# hzctl-systemctl — wrapper that translates systemctl's action-first syntax
+# to hzctl's SOV (Subject-Object-Verb) syntax.
+# deferred: not a drop-in replacement — only the common verbs. Untranslated
+# commands fall through to hzctl with a warning.
+#
+# Install: ln -s hzctl-systemctl /usr/local/bin/systemctl
+# (or alias systemctl=hzctl-systemctl in your shell)
+#
+# Supported translations (systemctl action-first → hzctl SOV):
+#   systemctl start X       → hzctl X start
+#   systemctl stop X        → hzctl X stop
+#   systemctl restart X     → hzctl X restart
+#   systemctl reload X      → hzctl X reload
+#   systemctl status [X]    → hzctl X status   (or `hzctl status` if no X)
+#   systemctl list-units    → hzctl list
+#   systemctl daemon-reload → hzctl daemon-reload
+#   systemctl enable X      → hzctl X enable
+#   systemctl disable X     → hzctl X disable
+#   systemctl poweroff      → hzctl shutdown
+#   systemctl reboot        → hzctl reboot
+
+HZCTL="${HZCTL:-hzctl}"
+cmd="$1"; shift || true
+
+case "$cmd" in
+    start|stop|restart|reload|enable|disable)
+        # action-first → SOV: swap cmd and first arg
+        if [ "$#" -ge 1 ]; then
+            svc="$1"; shift
+            exec "$HZCTL" "$svc" "$cmd" "$@"
+        else
+            exec "$HZCTL" "$cmd"
+        fi
+        ;;
+    status)
+        if [ "$#" -ge 1 ]; then
+            svc="$1"; shift
+            exec "$HZCTL" "$svc" status "$@"
+        else
+            exec "$HZCTL" status
+        fi
+        ;;
+    list-units|list-unit-files)
+        exec "$HZCTL" list
+        ;;
+    daemon-reload|reboot)
+        exec "$HZCTL" "$cmd" "$@"
+        ;;
+    poweroff|halt)
+        exec "$HZCTL" shutdown "$@"
+        ;;
+    is-active|is-enabled)
+        # systemctl is-active X exits 0 if active, 3 if inactive.
+        # hzctl X status prints state; grep for "running".
+        if [ "$#" -ge 1 ]; then
+            svc="$1"; shift
+            out=$("$HZCTL" "$svc" status 2>&1)
+        else
+            out=$("$HZCTL" status 2>&1)
+        fi
+        echo "$out"
+        if echo "$out" | grep -q "running"; then exit 0; else exit 3; fi
+        ;;
+    "")
+        echo "usage: systemctl <command> [service...]" >&2
+        echo "(hzctl-systemctl wrapper — translates action-first to hzctl SOV:" >&2
+        echo "start/stop/restart/reload/status/list-units/daemon-reload/enable/" >&2
+        echo "disable/poweroff/reboot)" >&2
+        exit 1
+        ;;
+    *)
+        echo "systemctl: unknown command '$cmd' — falling through to hzctl" >&2
+        exec "$HZCTL" "$cmd" "$@"
+        ;;
+esac
+
