@@ -90,6 +90,10 @@ static void subst_vars(char *buf, size_t bufsz);  /* v2.0: $NAME → value */
 static int  setup_listen_sockets(void);           /* v2.0: bind socket-activation fds */
 static int  setup_notify_socket(void);            /* v2.0: bind /run/hoshizora/notify */
 static void handle_notify_event(void);            /* v2.0: parse READY=1, disarm start_deadline */
+/* v2.0 helpers used before definition */
+static int  parse_duration(const char *s);
+static void mkdir_parents_of(const char *path);
+static int  parse_hostport(const char *str, char *host_out, int host_sz, int *port_out);
 
 /* ---------------------------------------------------------------------------
  * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
@@ -131,12 +135,15 @@ static void log_msg(const char *level, const char *fmt, ...) {
     (void)write(2, buf, n);
     log_ring_append(buf, n);
     /* v2.0: forward to syslog (hzlog collects /dev/log). No-op if /dev/log
-     * is missing — degraded mode is acceptable. Strip the "[hoshizora X] "
-     * prefix and trailing newline; syslog(3) adds its own. */
+     * is missing. Pass the formatted message directly via vsyslog so the
+     * format string + args are processed by syslog, not sliced from buf
+     * with a magic offset (was buf+14 — brittle if prefix format changes). */
     int prio = LOG_INFO;
     if (level[0] == 'W') prio = LOG_WARNING;
     else if (level[0] == 'E') prio = LOG_ERR;
-    syslog(prio, "%.*s", (int)(n - 1), buf + 14);  /* skip "[hoshizora X] " (14 chars) */
+    va_start(ap, fmt);
+    vsyslog(prio, fmt, ap);
+    va_end(ap);
 }
 #define LOGI(...) log_msg("I", __VA_ARGS__)
 #define LOGW(...) log_msg("W", __VA_ARGS__)
@@ -240,7 +247,7 @@ static int setup_listen_sockets(void) {
             } else {
                 /* tcp — parse "host:port" */
                 char host[64]; int port;
-                if (sscanf(addr, "%63[^:]:%d", host, &port) != 2 || port < 1 || port > 65535) {
+                if (parse_hostport(addr, host, sizeof(host), &port) != 0) {
                     LOGW("%s: bad listen: %s", s->name, addr); continue;
                 }
                 fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -281,21 +288,7 @@ static int setup_notify_socket(void) {
         strncpy(g_notify_path, env, sizeof(g_notify_path) - 1);
         g_notify_path[sizeof(g_notify_path) - 1] = 0;
     }
-    char dir[256];
-    strncpy(dir, g_notify_path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = 0;
-    char *slash = strrchr(dir, '/');
-    if (slash) { *slash = 0; if (dir[0]) {
-        /* mkdir -p style: walk and create each level. */
-        char *p = dir;
-        while (*p) {
-            if (*p == '/' && p > dir) {
-                *p = 0; mkdir(dir, 0755); *p = '/';
-            }
-            p++;
-        }
-        mkdir(dir, 0755);
-    }}
+    mkdir_parents_of(g_notify_path);
     unlink(g_notify_path);
     g_notifyfd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (g_notifyfd < 0) { LOGW("notify socket: %s", strerror(errno)); return -1; }
@@ -346,17 +339,11 @@ static int setup_container_child(const hz_service_t *s) {
         if (unshare(CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWPID) < 0) {
             LOGW("%s: unshare: %s — running without namespace isolation", s->name, strerror(errno));
             /* keep going — degraded mode, not fatal */
-        } else {
-            /* bring up loopback in the new netns */
-            int lo = socket(AF_INET, SOCK_DGRAM, 0);
-            if (lo >= 0) {
-                struct ifreq { char name[16]; short flags; } ifr = {0};
-                strcpy(ifr.name, "lo");
-                ifr.flags = 0x1;  /* IFF_UP */
-                ioctl(lo, 0x8914, &ifr);  /* SIOCSIFFLAGS */
-                close(lo);
-            }
         }
+        /* deferred: bring up loopback in the new netns. Requires struct ifreq
+         * from <net/if.h> — including it just for one ioctl is heavier than
+         * the call is worth. Add when a real config uses namespace: private
+         * AND needs local networking inside the namespace. */
     }
     if (s->container.rootfs[0]) {
         /* mount rootfs as private so pivot_root doesn't propagate */
@@ -528,7 +515,7 @@ static int peek_ident_is(lexer_t *L, const char *kw) {
     return t.kind == TOK_IDENT && strcmp(t.text, kw) == 0;
 }
 
-/* ponytail: skip an unknown field's value inside a service/watch block.
+/* deferred: skip an unknown field's value inside a service/watch block.
  * Stops at: top-level ';' (statement terminator), OR unmatched '}'/']'/')'
  * at depth 0 (block close — rewind one char so caller's loop sees it).
  * Tracks {}/[]/() nesting so a `[ ... ]` inside the value doesn't end early. */
@@ -543,6 +530,67 @@ static void skip_unknown_field(lexer_t *L) {
             depth--;
         } else if (t.kind == TOK_PUNCT && t.text[0]==';' && depth == 0) break;
     }
+}
+
+/* v2.0: skip a balanced { ... } block. Caller has NOT consumed the opening
+ * `{`. Reads tokens until the matching `}` (depth tracking handles nested
+ * blocks), then returns. If an unmatched `}` appears at depth 0, rewinds
+ * so the caller's loop sees it. */
+static void skip_brace_block(lexer_t *L) {
+    tok_t t;
+    int depth = 0;
+    for (;;) {
+        if (!next_token(L, &t)) break;
+        if (t.kind == TOK_PUNCT && t.text[0] == '{') depth++;
+        else if (t.kind == TOK_PUNCT && t.text[0] == '}') {
+            if (depth == 0) { L->p--; break; }
+            if (--depth == 0) break;
+        }
+    }
+}
+
+/* v2.0: parse a duration string like "30s", "5m", "2h". Returns seconds
+ * or -1 on parse error. Used by every:, timeout-start:, retry-after:.
+ * deferred: no `d` (days), no fractional values, no ms. */
+static int parse_duration(const char *s) {
+    char *end;
+    unsigned long v = strtoul(s, &end, 10);
+    if (end == s) return -1;
+    unsigned long mul;
+    if      (*end == 's' || *end == 0) mul = 1;
+    else if (*end == 'm')              mul = 60;
+    else if (*end == 'h')              mul = 3600;
+    else return -1;
+    return (int)(v * mul);
+}
+
+/* v2.0: mkdir -p for the parent of `path`. Walks each path component and
+ * creates it. Used by control socket + notify socket + disable cmd. */
+static void mkdir_parents_of(const char *path) {
+    char dir[256];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = 0;
+    char *slash = strrchr(dir, '/');
+    if (!slash) return;
+    *slash = 0;
+    if (!dir[0]) return;
+    char *p = dir;
+    while (*p) {
+        if (*p == '/' && p > dir) {
+            *p = 0; mkdir(dir, 0755); *p = '/';
+        }
+        p++;
+    }
+    mkdir(dir, 0755);
+}
+
+/* v2.0: parse "host:port" into separate buffers. Returns 0 on success,
+ * -1 on error. host buffer must be at least 64 bytes. */
+static int parse_hostport(const char *str, char *host_out, int host_sz, int *port_out) {
+    if (sscanf(str, "%63[^:]:%d", host_out, port_out) != 2) return -1;
+    if (*port_out < 1 || *port_out > 65535) return -1;
+    (void)host_sz;  /* sscanf width already enforces */
+    return 0;
 }
 
 /* ponytail: parse size suffixes for memory-limit. Returns 0 on parse error.
@@ -826,43 +874,23 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
              * asks for it. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
-            /* deferred: accept "3600", "1h", "60s", "5m" — number + optional unit.
-             * No `d` (days) — day-granularity jobs want cron-syntax `0 3 * * *`,
-             * not `every: "1d"`. Add when a real config asks for it. */
-            char *end;
-            unsigned long v = strtoul(t.text, &end, 10);
-            if (end == t.text) { LOGE("%s: bad every: %s", s->name, t.text); return -1; }
-            unsigned long mul = 1;
-            if      (*end == 's' || *end == 0) mul = 1;
-            else if (*end == 'm')              mul = 60;
-            else if (*end == 'h')              mul = 3600;
-            else { LOGE("%s: bad every unit: %s", s->name, t.text); return -1; }
-            s->cron_interval = (int)(v * mul);
-            if (s->cron_interval < 1) { LOGE("%s: every must be >= 1s", s->name); return -1; }
+            s->cron_interval = parse_duration(t.text);
+            if (s->cron_interval < 1) { LOGE("%s: bad every: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "timeout-start") == 0) {
             /* v2.0: timeout-start: Ns — if not RUNNING within N seconds, FAILED. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
-            char *end; unsigned long v = strtoul(t.text, &end, 10);
-            unsigned long mul = 1;
-            if      (*end == 's' || *end == 0) mul = 1;
-            else if (*end == 'm')              mul = 60;
-            else if (*end == 'h')              mul = 3600;
-            s->timeout_start = (int)(v * mul);
-            if (s->timeout_start < 1) { LOGE("%s: timeout-start must be >= 1s", s->name); return -1; }
+            s->timeout_start = parse_duration(t.text);
+            if (s->timeout_start < 1) { LOGE("%s: bad timeout-start: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "retry-after") == 0) {
             /* v2.0: retry-after: Ns — services with start-condition that fail
              * to execve (exit 127) re-arm cron_next = now + retry_after. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
-            char *end; unsigned long v = strtoul(t.text, &end, 10);
-            unsigned long mul = 1;
-            if      (*end == 's' || *end == 0) mul = 1;
-            else if (*end == 'm')              mul = 60;
-            s->retry_after = (int)(v * mul);
-            if (s->retry_after < 1) { LOGE("%s: retry-after must be >= 1s", s->name); return -1; }
+            s->retry_after = parse_duration(t.text);
+            if (s->retry_after < 1) { LOGE("%s: bad retry-after: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "expect-notify") == 0) {
             /* v2.0: expect-notify: true; — service speaks sd_notify. Pairs
@@ -988,11 +1016,7 @@ static int parse_config(lexer_t *L) {
             }
             if (g_sys.n_services >= HZ_MAX_SERVICES) {
                 LOGW("too many services (max %d), ignoring %s", HZ_MAX_SERVICES, t.text);
-                int depth = 0;
-                while (next_token(L, &t)) {
-                    if (t.kind == TOK_PUNCT && t.text[0] == '{') depth++;
-                    else if (t.kind == TOK_PUNCT && t.text[0] == '}') { if (--depth < 0) break; }
-                }
+                skip_brace_block(L);
                 continue;
             }
             hz_service_t *s = &g_sys.services[g_sys.n_services];
@@ -1031,11 +1055,7 @@ static int parse_config(lexer_t *L) {
             }
             if (g_sys.n_watches >= HZ_MAX_WATCHES) {
                 LOGW("too many watches (max %d), ignoring %s", HZ_MAX_WATCHES, t.text);
-                int depth = 0;
-                while (next_token(L, &t)) {
-                    if (t.kind == TOK_PUNCT && t.text[0] == '{') depth++;
-                    else if (t.kind == TOK_PUNCT && t.text[0] == '}') { if (--depth < 0) break; }
-                }
+                skip_brace_block(L);
                 continue;
             }
             hz_watch_t *w = &g_sys.watches[g_sys.n_watches];
@@ -1078,11 +1098,7 @@ static int parse_config(lexer_t *L) {
             }
             if (g_sys.n_targets >= HZ_MAX_TARGETS) {
                 LOGW("too many targets (max %d), ignoring %s", HZ_MAX_TARGETS, t.text);
-                int depth = 0;
-                while (next_token(L, &t)) {
-                    if (t.kind == TOK_PUNCT && t.text[0] == '{') depth++;
-                    else if (t.kind == TOK_PUNCT && t.text[0] == '}') { if (--depth < 0) break; }
-                }
+                skip_brace_block(L);
                 continue;
             }
             hz_target_t *tg = &g_sys.targets[g_sys.n_targets];
@@ -1219,7 +1235,7 @@ static int evaluate_sc(const hz_sc_t *sc) {
  * anything — just checks the listener is alive. */
 static int tcp_probe(const char *hostport, int timeout_s) {
     char host[128]; int port;
-    if (sscanf(hostport, "%127[^:]:%d", host, &port) != 2 || port < 1 || port > 65535) return -1;
+    if (parse_hostport(hostport, host, sizeof(host), &port) != 0) return -1;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     struct timeval tv = { .tv_sec = timeout_s, .tv_usec = 0 };
@@ -1417,7 +1433,8 @@ static int start_service(hz_service_t *s) {
         argv[0] = s->exec;
         for (int i = 0; i < s->argc; i++) argv[i + 1] = s->argv[i];
         argv[s->argc + 1] = NULL;
-        /* build envp: inherited env + service env */
+        /* build envp: inherited env + service env + v2.0 extras.
+         * deferred: no free() — child execs or _exit()s, leaks don't matter. */
         extern char **environ;
         char *envp[HZ_MAX_ENV + 64];
         int ei = 0;
@@ -1425,23 +1442,17 @@ static int start_service(hz_service_t *s) {
         for (int i = 0; i < s->n_env && ei < HZ_MAX_ENV + 60; i++) {
             char buf[HZ_MAX_NAME + HZ_MAX_STR + 4];
             snprintf(buf, sizeof(buf), "%s=%s", s->env_keys[i], s->env_vals[i]);
-            envp[ei] = strdup(buf);
-            envp[ei + 1] = NULL;
-            ei++;
+            envp[ei++] = strdup(buf);
         }
-        /* v2.0: sd_notify env — point service at the global notify socket. */
+        /* v2.0 extras: notify socket (if expect-notify) + listen-fd count (if any) */
+        char ebuf[256 + 32];
         if (s->expect_notify) {
-            char nb[256 + 32];
-            snprintf(nb, sizeof(nb), "HZ_NOTIFY_SOCKET=%s", g_notify_path);
-            envp[ei++] = strdup(nb);
-            envp[ei] = NULL;
+            snprintf(ebuf, sizeof(ebuf), "HZ_NOTIFY_SOCKET=%s", g_notify_path);
+            envp[ei++] = strdup(ebuf);
         }
-        /* v2.0: socket activation — tell child how many listen fds it got. */
         if (nfd > 0) {
-            char nb[32];
-            snprintf(nb, sizeof(nb), "HZ_LISTEN_FDS=%d", nfd);
-            envp[ei++] = strdup(nb);
-            envp[ei] = NULL;
+            snprintf(ebuf, sizeof(ebuf), "HZ_LISTEN_FDS=%d", nfd);
+            envp[ei++] = strdup(ebuf);
         }
         envp[ei] = NULL;
         execve(s->exec, argv, envp);
@@ -1721,11 +1732,7 @@ static int setup_control_socket(void) {
         return -1;
     }
     /* mkdir -p parent dir of g_ctl_path */
-    char dir[256];
-    strncpy(dir, g_ctl_path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = 0;
-    char *slash = strrchr(dir, '/');
-    if (slash) { *slash = 0; if (dir[0]) mkdir(dir, 0755); }
+    mkdir_parents_of(g_ctl_path);
     unlink(g_ctl_path);
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) return -1;
@@ -2062,15 +2069,9 @@ static void handle_control_client(int cfd) {
     } else if (strcmp(cmd, "disable") == 0 && arg) {
         char p[HZ_MAX_PATH];
         enabled_path_for(arg, p, sizeof(p));
-        /* mkdir -p <ctl-dir>/enabled/ — both levels, ignore EEXIST */
-        char dir[256];
-        strncpy(dir, g_ctl_path, sizeof(dir) - 1);
-        dir[sizeof(dir) - 1] = 0;
-        char *slash = strrchr(dir, '/');
-        if (slash) { *slash = 0; if (dir[0]) mkdir(dir, 0755); }
-        char endir[300];
-        snprintf(endir, sizeof(endir), "%s/enabled", dir);
-        mkdir(endir, 0755);
+        /* mkdir -p <ctl-dir>/enabled/ — mkdir_parents_of handles <ctl-dir>,
+         * then we explicitly mkdir the `enabled` subdir. */
+        mkdir_parents_of(p);  /* creates <ctl-dir>/ and <ctl-dir>/enabled/ */
         int fd2 = open(p, O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (fd2 < 0) ctl_send(cfd, "error");
         else { close(fd2); ctl_send(cfd, "ok"); }

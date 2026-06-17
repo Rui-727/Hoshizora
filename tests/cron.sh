@@ -1,17 +1,19 @@
 #!/bin/bash
 # Hoshizora cron self-check: every: directive fires a job at intervals.
-# ponytail: one job, one marker file, one assertion — file exists after 5s.
+# deferred: one job, one marker file, one assertion — file exists after 5s.
 cd "$(dirname "$0")/.."   # repo root, where ./hoshizora lives
+. tests/lib.sh
 
 HZ=./hoshizora
 HZCTL=./hzctl
 SOCKDIR=/tmp/hz_cron_$$
 SOCK=$SOCKDIR/control
+LOGFILE=/tmp/hz_cron.log
 mkdir -p "$SOCKDIR"
 rm -f /tmp/hz_cron_marker
 trap 'rm -rf "$SOCKDIR" /tmp/hz_cron_marker; kill $PID 2>/dev/null || true' EXIT
 
-HZ_CTL_PATH="$SOCK" $HZ tests/cron.hs > /tmp/hz_cron.log 2>&1 &
+HZ_CTL_PATH="$SOCK" $HZ tests/cron.hs > "$LOGFILE" 2>&1 &
 PID=$!
 for i in 1 2 3 4 5 6 7 8 9 10; do
     [ -S "$SOCK" ] && break
@@ -19,7 +21,7 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 if [ ! -S "$SOCK" ]; then
     echo "FAIL: control socket not created"
-    cat /tmp/hz_cron.log
+    cat "$LOGFILE"
     exit 1
 fi
 export HZ_CTL_PATH="$SOCK"
@@ -40,18 +42,6 @@ $HZCTL shutdown
 wait $PID 2>/dev/null || true
 
 echo "--- assertions ---"
-PASS=0
-FAIL=0
-chk() {
-    if grep -q "$1" /tmp/hz_cron.log; then
-        echo "PASS: $2"
-        PASS=$((PASS+1))
-    else
-        echo "FAIL: $2"
-        FAIL=$((FAIL+1))
-    fi
-}
-
 chk "loaded service marker"            "cron service parsed"
 chk "cron scheduled, first fire in 2s" "cron job scheduled at startup"
 chk "cron firing"                      "cron timer fired"
@@ -65,11 +55,10 @@ else
     FAIL=$((FAIL+1))
 fi
 
-if grep -qE "parse error|FATAL|Assertion" /tmp/hz_cron.log; then
+if grep -qE "parse error|FATAL|Assertion" "$LOGFILE"; then
     echo "FAIL: errors in log"
     FAIL=$((FAIL+1))
 fi
-rm -f /tmp/hz_cron.log
+rm -f "$LOGFILE"
 
-echo "--- cron self-check: $PASS PASS, $FAIL FAIL ---"
-[ "$FAIL" -eq 0 ] || exit 1
+summary "cron"

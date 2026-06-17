@@ -96,11 +96,11 @@ priority.
 - **`init.c:1757`** — one-time warning if cgroup v2 isn't available but config asks. `no-trigger`
 - **`init.c:1811`** — PID 1 returning from main = kernel panic ("Attempted to kill. `no-trigger`
 
-## `ARCHITECTURE.md` (3 markers)
+## `ARCHITECTURE.md` (deleted v2.0.1 — merged into README)
 
-- **`ARCHITECTURE.md:10`** — ` comments (shorthand for "minimal by design — add when. `no-trigger`
-- **`ARCHITECTURE.md:216`** — ` comment in `parse_service_block` / `parse_watch_block`:. `no-trigger`
-- **`ARCHITECTURE.md:565`** — ` comment or in. `no-trigger`
+These markers referred to a 704-line doc that duplicated README content + source
+comments. File deleted in the v2.0.1 audit cleanup; markers below are kept for
+history. The `deferred:` comments they referenced still live in `init.c`.
 
 ## `Makefile` (2 markers)
 
