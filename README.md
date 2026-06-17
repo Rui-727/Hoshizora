@@ -2,6 +2,10 @@
 
 A minimal init system (PID 1) for Linux/x86_64 with a runtime control socket.
 
+**New here? Read [`GUIDE.md`](GUIDE.md) first** — it walks you through
+testing Hoshizora safely, from `make test` (sandbox) to QEMU boot to real
+hardware install.
+
 ## Design principles
 
 - **Modular** — features that can be compiled out or disabled at runtime.
