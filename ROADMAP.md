@@ -182,6 +182,80 @@ containerd's job. Hoshizora just supervises the resulting process tree.
 
 ---
 
+## v2.1 — shipped
+
+Plugin API + session tracking. Three features matching the user's spec,
+plus an example plugin binary demonstrating the event socket API.
+
+### Plugin event socket  ✅ shipped
+
+`/run/hoshizora/events` (override via `HZ_EVENT_PATH`) — Unix stream
+socket. Up to 8 subscribers connect and stay open; hoshizora broadcasts
+event lines: `START service=X pid=N`, `EXIT service=X pid=N status=N
+crashed=N`, `FAILED service=X restarts=N`, `READY service=X`,
+`STOPPING service=X`, `SHUTDOWN services=N`.
+
+Per-client write buffers (fixed-size ring, 4 KiB each) added in v2.1.1
+after the audit flagged "slow subscriber lags main loop". `event_broadcast`
+uses non-blocking `send()`; full buffer drops the event with a one-shot
+warning per subscriber. Main loop never blocks on plugin I/O.
+
+deferred: structured event format (text is parseable, JSON is overkill
+until asked), event filtering server-side (plugins can `grep`).
+
+### Session tracker  ✅ shipped
+
+`hz-session` shell script, ~70 LOC. pam_exec.so helper writes
+`/run/hoshizora/sessions/$USER` on `open_session`, removes on
+`close_session`. Grants `setfacl -m u:$USER:rw` on `/dev/dri/*`,
+`/dev/snd/*`, `/dev/input/event*`, `/dev/video*` (configurable via
+`$HZ_SESSION_DEVS`) on login; revokes on logout.
+
+Install via:
+```
+session required pam_exec.so /etc/hoshizora/hz-session
+```
+
+deferred: multi-seat logic, udev rule integration (setfacl on login is
+enough for single-seat), locking on the session file.
+
+### Shutdown gate  ✅ shipped
+
+`hzctl` checks `$HZ_SESSION_DIR` (default `/run/hoshizora/sessions`)
+before sending `shutdown`/`poweroff`/`reboot`. Refuses with exit 3 if
+entries exist; `--force` bypasses. `--force` is stripped before sending
+to the server — PID 1 stays free of filesystem-state inspection.
+
+### Example plugin  ✅ shipped
+
+`hz-event-logger` binary, ~155 LOC. Subscribes to the event socket,
+logs all events to `--log FILE` (or stdout), optionally runs `--run CMD`
+on events matching `--match PREFIX`. The event line is piped to the
+command's stdin. `SIGCHLD=SIG_IGN` auto-reaps `--run` children.
+
+Examples:
+```
+hz-event-logger                                          # tail events to stdout
+hz-event-logger --log /var/log/hoshizora-events.log      # persist all events
+hz-event-logger --match 'FAILED ' --run /usr/local/bin/hz-on-fail
+hz-event-logger --match SHUTDOWN --run 'wall "system going down"'
+```
+
+### v2.1 final numbers
+
+| Metric | v2.0 | v2.1 |
+|---|---|---|
+| LOC (init.c) | 2,382 | 2,485 |
+| LOC (hzctl.c) | 64 | 105 |
+| LOC (hz-event-logger.c) | — | 155 (new) |
+| LOC (hz-session) | — | 71 (new, shell) |
+| Total project LOC | ~2,700 | ~3,070 |
+| External deps | libc | libc |
+| Self-checks | 6 (55 PASS) | 8 (65 PASS) |
+| Poll fds | 6 | 7 (added event socket) |
+
+---
+
 ## Explicitly NOT building
 
 - **`boot0.asm`** — kernel already loads the ELF, sets up paging/GDT/stack.

@@ -11,8 +11,10 @@ shortcut stays.
 v2.0 shipped nine features that were previously on this list (capability
 dropping, resilient execve, journal integration, variable substitution,
 startup timeouts, sd-notify, socket activation, container integration,
-service targets). Their `deferred:` markers in source have been replaced
-with `v2.0:` markers. The remaining markers below are still deferred.
+service targets). v2.1 shipped three more (plugin event socket, session
+tracker, shutdown gate). Their `deferred:` markers in source have been
+replaced with `v2.0:` / `v2.1:` markers. The remaining markers below are
+still deferred.
 
 See `ROADMAP.md` for forward-looking features that aren't yet
 deferred-markers because they have agreed triggers and a shipping

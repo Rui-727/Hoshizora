@@ -6,18 +6,18 @@ A minimal init system (PID 1) for Linux/x86_64 with a runtime control socket.
 
 - **Modular** — features that can be compiled out or disabled at runtime.
   The core (`init.c`) is a single poll() loop; cgroups, fanotify, health
-  probes, cron scheduling, socket activation, sd-notify, and container
-  namespaces are independent code paths that no-op cleanly when their
-  kernel feature is missing or unavailable.
+  probes, cron scheduling, socket activation, sd-notify, container
+  namespaces, and the plugin event socket are independent code paths that
+  no-op cleanly when their kernel feature is missing or unavailable.
 - **Transparent** — readable code, predictable behavior. No threads, no
-  async runtime, no event-loop library. One process, one loop, six fds.
+  async runtime, no event-loop library. One process, one loop, seven fds.
   Every runtime decision is logged with the service name and reason.
 - **Minimal by default** — the core ships only what a real config needs.
   Optional features are tracked in `DEFERRED.md` and added when a concrete
   use case arrives, not speculatively.
 
-See `ROADMAP.md` for the v2.0 feature set (shipped) and forward-looking
-items still on the deferral list.
+See `ROADMAP.md` for the v2.0/v2.1 feature sets (shipped) and
+forward-looking items still on the deferral list.
 
 ## What it does
 
@@ -49,6 +49,9 @@ items still on the deferral list.
 26. **sd-notify readiness protocol** — `expect-notify: true;` configures a service to send `READY=1` over the global `/run/hoshizora/notify` socket (override via `HZ_NOTIFY_PATH`). Hoshizora parses `<service-name> READY=1` / `STOPPING=1`, disarms `start_deadline` on READY.
 27. **Container integration** — `namespace: private;` calls `unshare(CLONE_NEWNS|NEWNET|NEWPID)` in the child post-fork; `rootfs: "/path";` bind-mounts and `pivot_root`s; `bind: "src:dst";` creates mount entries. All degrade to non-fatal warnings if capabilities are missing.
 28. **Service targets** — `target NAME { requires: [a, b, c]; }` defines a named group. `hzctl start <target>` walks the list and starts each member. deferred: `isolate` (stop everything not in dep closure) — add when a real config needs it.
+29. **Plugin event socket** — `/run/hoshizora/events` (override via `HZ_EVENT_PATH`) broadcasts `START`/`EXIT`/`FAILED`/`READY`/`STOPPING`/`SHUTDOWN` events to up to 8 subscribers. Each subscriber gets a per-client write buffer so a slow plugin can't lag the main poll loop — events are dropped (with a one-shot warning) if the buffer fills. `hz-event-logger` is the example plugin: `--log FILE`, `--match PREFIX`, `--run CMD` (event line piped to stdin).
+30. **Session tracking** — `hz-session` shell script (installed via `pam_exec.so`) writes `/run/hoshizora/sessions/$USER` on login, `setfacl -m u:$USER:rw` on `/dev/dri/*` `/dev/snd/*` `/dev/input/event*` `/dev/video*` (configurable via `$HZ_SESSION_DEVS`), removes file + revokes ACLs on logout. deferred: multi-seat, udev integration.
+31. **Shutdown gate** — `hzctl shutdown`/`poweroff`/`reboot` refuses if `$HZ_SESSION_DIR` (default `/run/hoshizora/sessions`) has entries, exit code 3. `--force` bypasses. Stripped before sending to the server; PID 1 stays free of filesystem-state inspection.
 
 ## Control socket protocol
 
@@ -67,8 +70,9 @@ hzctl enable <name>              # mark for autostart (ephemeral)
 hzctl disable <name>             # skip at boot / reload (ephemeral)
 hzctl show                       # list services + enabled state (rc-update show flavor)
 hzctl logs [N]                   # last N log lines (default 50)
-hzctl shutdown | poweroff        # sync + reboot(RB_POWER_OFF)
-hzctl reboot                     # sync + reboot(RB_AUTOBOOT)
+hzctl shutdown | poweroff        # sync + reboot(RB_POWER_OFF) — refuses if sessions open
+hzctl reboot                     # sync + reboot(RB_AUTOBOOT) — refuses if sessions open
+hzctl shutdown --force           # override the session gate
 hzctl help
 
 # Gentoo-style name-first (rc-service flavor):
@@ -85,7 +89,7 @@ Socket path: `/run/hoshizora/control` (override with `HZ_CTL_PATH` env var). Per
 
 Intentionally omitted — see `DEFERRED.md` for the full ledger. Add when actually needed:
 
-- **io_uring** (uses `poll()` over six fds — already non-blocking)
+- **io_uring** (uses `poll()` over seven fds — already non-blocking)
 - **transactional snapshot/restore** (CRIU's job if you really need process freeze/resume)
 - **per-service capability drop** (PID 1 caps are dropped post-setup; per-service capsets deferred — add when a config asks)
 - **non-root operator access** to the control socket (add a `hoshizora` group + chgrp when needed)
@@ -98,8 +102,10 @@ Intentionally omitted — see `DEFERRED.md` for the full ledger. Add when actual
 
 ## Sibling binaries
 
-- **`hzctl`** — control client (~60 LOC). Connects to the socket, sends one line, prints the response.
+- **`hzctl`** — control client (~105 LOC). Connects to the socket, sends one line, prints the response. Refuses `shutdown`/`poweroff`/`reboot` if `$HZ_SESSION_DIR` has entries; `--force` bypasses.
 - **`hzlog`** — syslog collector (~95 LOC). Binds `/dev/log` as `SOCK_DGRAM`, prepends receive-time, appends to `/var/log/messages`. Separate binary because PID 1 must not parse untrusted input.
+- **`hz-event-logger`** — example plugin (~155 LOC). Subscribes to `/run/hoshizora/events`, logs to `--log FILE` (or stdout), optionally runs `--run CMD` on events matching `--match PREFIX`. Demonstrates the plugin event socket API.
+- **`hz-session`** — pam_exec helper (~70 LOC shell). Writes/removes session files in `/run/hoshizora/sessions/$USER`, grants/revokes ACLs on devices so logged-in users get GPU/sound/seat access. Install via `session required pam_exec.so /etc/hoshizora/hz-session`.
 
 ## Build
 
@@ -107,10 +113,12 @@ Intentionally omitted — see `DEFERRED.md` for the full ledger. Add when actual
 make
 ```
 
-Produces three statically-linked binaries:
+Produces four statically-linked binaries + one shell script:
 - `./hoshizora` — the init system (~1.0 MB, static)
-- `./hzctl` — the control client (~800 KB, static — glibc static is fat; `strip` or use musl for smaller binaries)
+- `./hzctl` — the control client (~820 KB, static)
 - `./hzlog` — the syslog collector (~960 KB, static)
+- `./hz-event-logger` — example plugin (~810 KB, static)
+- `./hz-session` — pam_exec helper (shell, ~70 LOC)
 
 ## Self-check
 
@@ -118,7 +126,7 @@ Produces three statically-linked binaries:
 make test
 ```
 
-Runs `tests/testsuite.sh`, which executes six self-checks in sequence and tallies PASS/FAIL (currently 55 PASS / 0 FAIL):
+Runs `tests/testsuite.sh`, which executes eight self-checks in sequence and tallies PASS/FAIL (currently 65 PASS / 0 FAIL):
 
 - **`tests/core.sh`** against `tests/core.hs` (two `/bin/true` services with a dependency + one bad-exec service) — exercises every control-socket command in both verb orderings (action-first AND Gentoo name-first SOV), exercises `enable`/`disable`/`show`/`logs`/`daemon-reload`, asserts each step, and verifies the bad-exec service goes to FAILED without a respawn storm. Also verifies `reboot(2)` is invoked on shutdown (expected to fail with EPERM in non-PID-1 test env).
 - **`tests/features.sh`** against `tests/features.hs` — verifies the parser accepts `memory-limit`, `cpu-weight`, `oom-kill`, `log`, `start-condition` (single + AND forms), `watch` blocks, `backoff(max=N)` extraction, `network_ready` virtual intent (verified at runtime against `/sys/class/net/`), AND that per-service log files are actually created on disk when services run.
@@ -126,13 +134,17 @@ Runs `tests/testsuite.sh`, which executes six self-checks in sequence and tallie
 - **`tests/cron.sh`** against `tests/cron.hs` — verifies `every: "2s"` scheduling: a service that touches a marker file fires within 6s, re-arms after clean exit.
 - **`tests/hzlog.sh`** — sends a syslog datagram via Python's `socket` module to an overridden `/dev/log`, asserts the line appears in the log file with receive-time prefix.
 - **`tests/v2.sh`** against `tests/v2.hs` — v2.0 features: variable substitution (`$SOCK`), `timeout-start:`, socket activation (`listen:` Unix path), `target` block + `hzctl start <target>`, capability-dropping attempt (warns in sandbox), sd-notify socket bind.
+- **`tests/v21.sh`** against `tests/v21.hs` — v2.1: event socket binds, subscriber connects + receives HELLO + START events, shutdown gate refuses with a fake session file present, `--force` override proceeds.
+- **`tests/plugin.sh`** against `tests/v21.hs` — `hz-event-logger` subscribes, logs events to a file, stays alive through events, receives SHUTDOWN event on hoshizora exit.
 
 A final `TESTSUITE SUMMARY` line prints total PASS / FAIL counts and the script exits non-zero if any check failed.
 
 ## Install
 
 ```bash
-sudo make install   # copies hoshizora to /sbin/, hzctl + hzlog to /usr/bin/
+sudo make install   # copies hoshizora to /sbin/, hzctl + hzlog + hz-event-logger to /usr/bin/
+                    # hz-session is not installed by 'make install' — copy manually to
+                    # /etc/hoshizora/hz-session and wire into /etc/pam.d/.
 ```
 
 Then either:
@@ -199,31 +211,33 @@ system "my-host" {
 
 ## Architecture
 
-Single-file C99 binary, single poll() loop over six fds:
+Single-file C99 binary, single poll() loop over seven fds:
 
 ```
-                    ┌─────────────────────────────────────────┐
-                    │           hoshizora (PID 1)             │
-                    └─────────────────────────────────────────┘
-                                    │
-       ┌──────────┬────────────────┼───────────────┬──────────┬──────────┐
-       ▼          ▼                ▼               ▼          ▼          ▼
-   signalfd   control socket   timerfd          timerfd    fanotify   notify fd
-   (SIGCHLD,  /run/hoshizora/  (next respawn    (5s health (file      /run/hoshizora/
-   SIGTERM,   control          or cron fire)    probe +    watches;   notify
-   SIGINT,                                     start_     -1 if      (sd_notify;
-   SIGHUP)                                     deadline   none)      -1 if none)
-       │          │                │               │          │          │
-       ▼          ▼                ▼               ▼          ▼          ▼
-   reap_        handle_         fire_due_       run_health_ handle_   handle_notify_
-   children()   command()       respawns()      checks()   fanotify_ event()
-   reload_                      start_service() tcp_probe  event()
-   config()                                     +start_
-   shutdown_                                    deadline
-   all()                                        check
+                    ┌──────────────────────────────────────────────────┐
+                    │              hoshizora (PID 1)                    │
+                    └──────────────────────────────────────────────────┘
+                                          │
+   ┌──────────┬───────────────┬──────────┴─────────┬──────────┬──────────┬──────────┐
+   ▼          ▼               ▼                    ▼          ▼          ▼          ▼
+signalfd   control socket   timerfd             timerfd    fanotify   notify fd   event fd
+(SIGCHLD,  /run/hoshizora/  (next respawn       (5s health (file      /run/        /run/
+SIGTERM,   control          or cron fire)       probe +    watches;   hoshizora/  hoshizora/
+SIGINT,                                        start_     -1 if      notify       events
+SIGHUP)                                        deadline   none)      (sd_notify;  (plugin
+   │          │                │                  │          │       -1 if none)  subs;
+   ▼          ▼                ▼                  ▼          ▼          ▼          -1 if none)
+reap_      handle_          fire_due_          run_health_ handle_   handle_      handle_event_
+children() command()        respawns()         checks()   fanotify_ notify_      subscriber()
+reload_                     start_service()    tcp_probe  event()    event()
+config()                                       +start_
+shutdown_                                      deadline
+all()                                          check
 ```
 
-No threads, no async, no event loop library. One process, one loop, six fds.
+No threads, no async, no event loop library. One process, one loop, seven fds.
+
+**Plugin event socket**: `setup_event_socket()` binds `/run/hoshizora/events` as a stream socket. Subscribers connect and stay open; `handle_event_subscriber()` accepts them into a fixed-size array (max 8). `event_broadcast()` writes events to all subscribers via non-blocking `send()`; each subscriber has a per-client ring buffer so a slow plugin can't lag the main loop — full buffer drops the event with a one-shot warning.
 
 **Capability dropping**: after `setup_*` calls complete, `capset(2)` keeps only `CAP_SYS_ADMIN` (cgroups, pivot_root, mount), `CAP_KILL` (signaling services), `CAP_SYS_BOOT` (reboot), `CAP_NET_ADMIN` (binding privileged ports for socket activation). All other capabilities dropped. Warns and continues with full caps if `capset` fails (e.g. sandbox without `CAP_SETPCAP`).
 

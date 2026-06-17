@@ -67,11 +67,25 @@ static char g_notify_path[256] = "/run/hoshizora/notify";
 static char g_event_path[256] = "/run/hoshizora/events";
 
 /* v2.1: plugin event subscribers. Fixed-size array of accepted client fds
- * that stay open and receive broadcast event lines. deferred: no epoll, no
- * per-client write buffers — slow subscriber blocks all broadcasts. Upgrade
- * to per-client queues if a real plugin needs it. */
+ * that stay open and receive broadcast event lines. Each subscriber has a
+ * per-client ring buffer (HZ_SUB_BUF bytes) — event_broadcast appends to
+ * each subscriber's buffer, then flushes via non-blocking send(). If the
+ * buffer fills, the event is dropped (with a one-shot warning per
+ * subscriber) so a slow plugin can't lag the main poll loop. */
 #define HZ_MAX_SUBS 8
-static int g_subs[HZ_MAX_SUBS];
+#define HZ_SUB_BUF  4096   /* per-subscriber ring buffer. 4 KiB absorbs ~68
+                            * events of avg 60 bytes — enough headroom for a
+                            * briefly-stalled plugin without unbounded growth.
+                            * A truly stuck plugin overflows in seconds and
+                            * gets drop-warnings; that's the right behavior. */
+struct hz_sub {
+    int  fd;
+    char buf[HZ_SUB_BUF];
+    int  head;       /* next byte to send */
+    int  tail;       /* next byte to write */
+    int  dropped;    /* 1 = warning already logged for current drop burst */
+};
+static struct hz_sub g_subs[HZ_MAX_SUBS];
 static int g_n_subs;
 
 /* v2.0: variable substitution. Top-level $NAME = "value" pairs, substituted
@@ -113,6 +127,8 @@ static int  setup_unix_socket(const char *env_name, const char *default_path,
 static int  setup_event_socket(void);
 static void event_broadcast(const char *fmt, ...);
 static void handle_event_subscriber(void);
+static void event_flush_all(void);
+static void sub_remove(int idx);
 
 /* ---------------------------------------------------------------------------
  * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
@@ -384,17 +400,80 @@ static int setup_event_socket(void) {
 }
 
 static void handle_event_subscriber(void) {
-    int cfd = accept4(g_eventfd, NULL, NULL, SOCK_CLOEXEC);
+    int cfd = accept4(g_eventfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
     if (cfd < 0) return;
     if (g_n_subs < HZ_MAX_SUBS) {
-        g_subs[g_n_subs++] = cfd;
-        /* send a hello line so the subscriber knows the connection is live */
-        dprintf(cfd, "HELLO hoshizora subscribers=%d\n", g_n_subs);
+        struct hz_sub *s = &g_subs[g_n_subs];
+        memset(s, 0, sizeof(*s));
+        s->fd = cfd;
+        g_n_subs++;
+        /* HELLO is queued via the same buffer path so a slow subscriber
+         * doesn't block accept() either. */
+        event_broadcast("HELLO hoshizora subscribers=%d\n", g_n_subs);
         LOGI("event subscriber accepted (total=%d)", g_n_subs);
     } else {
         dprintf(cfd, "ERROR too many subscribers\n");
         close(cfd);
     }
+}
+
+/* v2.1: remove a subscriber by index (swap-remove). Used by event_broadcast
+ * and event_flush_all when a subscriber's socket is gone. */
+static void sub_remove(int idx) {
+    LOGI("event subscriber fd=%d gone", g_subs[idx].fd);
+    close(g_subs[idx].fd);
+    g_subs[idx] = g_subs[g_n_subs - 1];
+    g_n_subs--;
+}
+
+/* v2.1: flush a subscriber's ring buffer via non-blocking send(). Returns
+ * 0 on success (or would-block), -1 if the subscriber is gone (broken pipe). */
+static int sub_flush(struct hz_sub *s) {
+    while (s->head != s->tail) {
+        int len = (s->tail > s->head) ? (s->tail - s->head)
+                                       : (HZ_SUB_BUF - s->head);
+        ssize_t w = send(s->fd, s->buf + s->head, len, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (w > 0) {
+            s->head = (s->head + w) % HZ_SUB_BUF;
+            continue;
+        }
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0;
+        /* EPIPE / ECONNRESET / other → subscriber gone */
+        return -1;
+    }
+    /* buffer empty — reset head/tail to 0 to maximize contiguous space */
+    s->head = s->tail = 0;
+    return 0;
+}
+
+/* v2.1: append data to a subscriber's ring buffer. If the buffer is full,
+ * drop the event (mark s->dropped so we warn once per burst). Returns 0
+ * on success, -1 if the subscriber should be removed (gone). */
+static int sub_append(struct hz_sub *s, const char *data, int n) {
+    /* try to flush first — maybe there's room after a send */
+    if (sub_flush(s) < 0) return -1;
+    int used = (s->tail - s->head + HZ_SUB_BUF) % HZ_SUB_BUF;
+    int free = HZ_SUB_BUF - used - 1;  /* -1 to distinguish full from empty */
+    if (n > free) {
+        if (!s->dropped) {
+            LOGW("event subscriber fd=%d buffer full — dropping events", s->fd);
+            s->dropped = 1;
+        }
+        return 0;  /* don't kill the subscriber, just drop */
+    }
+    /* append, handling wrap */
+    int first = HZ_SUB_BUF - s->tail;
+    if (n <= first) {
+        memcpy(s->buf + s->tail, data, n);
+    } else {
+        memcpy(s->buf + s->tail, data, first);
+        memcpy(s->buf, data + first, n - first);
+    }
+    s->tail = (s->tail + n) % HZ_SUB_BUF;
+    s->dropped = 0;  /* successful append resets the drop-warning state */
+    /* try to send immediately — if it would block, the data stays buffered */
+    if (sub_flush(s) < 0) return -1;
+    return 0;
 }
 
 static void event_broadcast(const char *fmt, ...) {
@@ -406,16 +485,26 @@ static void event_broadcast(const char *fmt, ...) {
     va_end(ap);
     if (n <= 0) return;
     if (n > (int)sizeof(buf)) n = sizeof(buf);
-    /* walk subscribers; close any that fail write (broken pipe / closed) */
+    /* walk subscribers; remove any that are gone (broken pipe / closed) */
     int i = 0;
     while (i < g_n_subs) {
-        ssize_t w = write(g_subs[i], buf, n);
-        if (w < 0 && (errno == EPIPE || errno == ECONNRESET)) {
-            LOGI("event subscriber %d gone", g_subs[i]);
-            close(g_subs[i]);
-            g_subs[i] = g_subs[g_n_subs - 1];  /* swap-remove */
-            g_n_subs--;
-            continue;  /* don't increment i — new fd at same slot */
+        if (sub_append(&g_subs[i], buf, n) < 0) {
+            sub_remove(i);
+            continue;  /* don't increment i — new sub at same slot */
+        }
+        i++;
+    }
+}
+
+/* v2.1: called once per main-loop iteration. Attempts to flush any pending
+ * buffered events to subscribers whose kernel-side socket buffer may have
+ * drained. Cheap: 8 non-blocking send() calls, mostly EAGAIN immediately. */
+static void event_flush_all(void) {
+    int i = 0;
+    while (i < g_n_subs) {
+        if (sub_flush(&g_subs[i]) < 0) {
+            sub_remove(i);
+            continue;
         }
         i++;
     }
@@ -2463,6 +2552,7 @@ int main(int argc, char **argv) {
         if (g_fanfd >= 0 && (pfds[4].revents & POLLIN)) handle_fanotify_event();
         if (g_notifyfd >= 0 && (pfds[5].revents & POLLIN)) handle_notify_event();
         if (g_eventfd >= 0 && (pfds[6].revents & POLLIN)) handle_event_subscriber();
+        event_flush_all();  /* v2.1: drain subscriber buffers each loop iter */
     }
 
     LOGI("shutdown signal received");

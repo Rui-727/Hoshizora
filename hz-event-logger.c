@@ -30,7 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <errno.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -95,61 +94,46 @@ int main(int argc, char **argv) {
     signal(SIGCHLD, SIG_IGN);
 
     /* open log file if specified */
-    int logfd = -1;
+    FILE *logf = NULL;
     if (log_path) {
-        logfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (logfd < 0) { perror(log_path); return 1; }
+        logf = fopen(log_path, "ae");  /* O_WRONLY|O_CREAT|O_APPEND */
+        if (!logf) { perror(log_path); return 1; }
     }
 
-    /* read event lines, log + maybe run cmd */
-    char buf[512];
+    /* v2.1.1: fdopen the socket and use fgets — saves the byte-by-byte
+     * line-buffering loop. stdio buffering on a Unix socket is fine (no
+     * seek needed). deferred: line longer than 511 chars is split; an
+     * event source that emits >511-char lines is itself a bug. */
+    FILE *sockf = fdopen(fd, "r");
+    if (!sockf) { perror("fdopen"); return 1; }
     char line[512];
-    size_t line_len = 0;
-    for (;;) {
-        ssize_t n = read(fd, buf, sizeof(buf));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            perror("read");
-            break;
-        }
-        if (n == 0) break;  /* socket closed — hoshizora shutting down */
-        for (ssize_t i = 0; i < n; i++) {
-            char c = buf[i];
-            if (c == '\n' || line_len >= sizeof(line) - 1) {
-                line[line_len] = 0;
-                /* log */
-                if (logfd >= 0) {
-                    (void)write(logfd, line, line_len);
-                    (void)write(logfd, "\n", 1);
-                } else {
-                    printf("%s\n", line);
-                    fflush(stdout);
-                }
-                /* maybe run cmd */
-                if (run_cmd && (!match_prefix || strncmp(line, match_prefix, strlen(match_prefix)) == 0)) {
-                    pid_t pid = fork();
-                    if (pid == 0) {
-                        /* child — pipe event line to cmd's stdin */
-                        int p[2];
-                        if (pipe(p) < 0) { _exit(127); }
-                        dup2(p[0], 0);
-                        close(p[0]);
-                        write(p[1], line, line_len);
-                        write(p[1], "\n", 1);
-                        close(p[1]);
-                        execl("/bin/sh", "sh", "-c", run_cmd, NULL);
-                        _exit(127);
-                    } else if (pid > 0) {
-                        /* SIGCHLD=SIG_IGN → kernel auto-reaps; no waitpid needed. */
-                    }
-                }
-                line_len = 0;
-            } else {
-                line[line_len++] = c;
+    while (fgets(line, sizeof(line), sockf)) {
+        /* strip trailing newline */
+        size_t L = strlen(line);
+        while (L > 0 && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = 0;
+
+        /* log */
+        if (logf) fprintf(logf, "%s\n", line);
+        else { printf("%s\n", line); fflush(stdout); }
+
+        /* maybe run cmd */
+        if (run_cmd && (!match_prefix || strncmp(line, match_prefix, strlen(match_prefix)) == 0)) {
+            pid_t pid = fork();
+            if (pid == 0) {
+                /* child — pipe event line to cmd's stdin */
+                int p[2];
+                if (pipe(p) < 0) { _exit(127); }
+                dup2(p[0], 0);
+                close(p[0]);
+                dprintf(p[1], "%s\n", line);
+                close(p[1]);
+                execl("/bin/sh", "sh", "-c", run_cmd, NULL);
+                _exit(127);
             }
+            /* SIGCHLD=SIG_IGN → kernel auto-reaps; no waitpid needed. */
         }
     }
-    close(fd);
-    if (logfd >= 0) close(logfd);
+    fclose(sockf);
+    if (logf) fclose(logf);
     return 0;
 }

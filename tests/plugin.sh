@@ -12,10 +12,9 @@ SOCK=$SOCKDIR/control
 EVENTS=$SOCKDIR/events
 LOGFILE=/tmp/hz_plugin.log
 EVENTLOG=/tmp/hz_plugin_events.txt
-RUNOUT=/tmp/hz_plugin_run.out
 mkdir -p "$SOCKDIR"
-rm -f "$EVENTLOG" "$RUNOUT"
-trap 'rm -rf "$SOCKDIR" "$LOGFILE" "$EVENTLOG" "$RUNOUT"; kill $PID $PLUGPID 2>/dev/null || true' EXIT
+rm -f "$EVENTLOG"
+trap 'rm -rf "$SOCKDIR" "$LOGFILE" "$EVENTLOG"; kill $PID $PLUGPID 2>/dev/null || true' EXIT
 
 # Start hoshizora with event socket under SOCKDIR
 HZ_CTL_PATH="$SOCK" HZ_EVENT_PATH="$EVENTS" $HZ tests/v21.hs > "$LOGFILE" 2>&1 &
@@ -31,9 +30,10 @@ if [ ! -S "$SOCK" ]; then
 fi
 export HZ_CTL_PATH="$SOCK"
 
-# Start the plugin: log all events to EVENTLOG, run 'cat > /tmp/hz_plugin_run.out'
-# on FAILED events. Runs in the foreground; we background it.
-HZ_EVENT_PATH="$EVENTS" $PLUGIN --log "$EVENTLOG" --match "FAILED " --run "cat > $RUNOUT" &
+# v2.1.1: dropped the --match FAILED --run cat path — no FAILED events
+# fire in this config (simple service has respawn, never gives up), so the
+# RUNOUT file was dead. Plugin just logs all events now.
+HZ_EVENT_PATH="$EVENTS" $PLUGIN --log "$EVENTLOG" &
 PLUGPID=$!
 sleep 0.4  # let it connect
 
@@ -89,5 +89,5 @@ if grep -qE "parse error|FATAL|Assertion" "$LOGFILE"; then
     FAIL=$((FAIL+1))
 fi
 
-rm -f "$LOGFILE" "$EVENTLOG" "$RUNOUT"
+rm -f "$LOGFILE" "$EVENTLOG"
 summary "plugin"
