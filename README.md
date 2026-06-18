@@ -1,4 +1,4 @@
-# Hoshizora (星宙 — "Starry Void")
+# Hoshizora (星空 — "Starry Sky")
 
 A minimal init system (PID 1) for Linux/x86_64 with a runtime control socket.
 
