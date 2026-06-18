@@ -28,15 +28,8 @@ mkdir -p /dev/pts /run
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs tmpfs /run
 
-# Load kernel modules from initramfs (if any were pre-installed)
-for mod in /lib/modules/*/modules.dep; do
-    [ -f "$mod" ] && depmod_dir=$(dirname "$mod") && break
-done
-if [ -n "$depmod_dir" ]; then
-    for mod in $(cat /proc/cmdline | sed 's/.*modules=\([^ ]*\).*/\1/' | tr ',' ' '); do
-        modprobe -d "$depmod_dir/.." "$mod" 2>/dev/null || true
-    done
-fi
+# deferred: kernel module loading. Add when an initramfs ships /lib/modules
+# and a real config needs modules= on the kernel cmdline.
 
 # Parse kernel cmdline
 cmdline=$(cat /proc/cmdline)

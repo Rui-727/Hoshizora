@@ -49,7 +49,10 @@ echo "[info] building initramfs in $WORKDIR..."
 mkdir -p "$WORKDIR"/{bin,sbin,etc/hoshizora,dev,proc,sys,run/hoshizora,root,tmp}
 chmod 1777 "$WORKDIR/tmp"
 
-# Binaries — hoshizora as /init (kernel's default init path)
+# Binaries — hoshizora as /init (kernel's default init path).
+# Note: for the initramfs-only QEMU test, hoshizora runs directly as /init
+# — no separate root device to pivot into. scripts/initramfs-init is for
+# the LFS/disk-image case where root= points to a real partition.
 cp ./hoshizora "$WORKDIR/init"
 chmod +x "$WORKDIR/init"
 
