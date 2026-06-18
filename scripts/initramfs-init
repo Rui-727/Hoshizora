@@ -1,0 +1,91 @@
+#!/bin/sh
+# initramfs /init — runs before hoshizora takes over as PID 1.
+# Mounts virtual filesystems, finds the root partition, pivots into it,
+# execs /sbin/hoshizora.
+#
+# This script IS PID 1 in the initramfs. It must not exit — if it does,
+# the kernel panics. On success, it pivot_roots into the real root and
+# execs hoshizora, which becomes the new PID 1.
+#
+# Kernel cmdline params consumed:
+#   root=PARTUUID=xxx   (or root=/dev/sdaN) — which device to mount as root
+#   rootfstype=ext4     — optional, defaults to auto-detect
+#   rootflags=ro        — optional mount flags
+#   rw                  — mount root read-write (default is read-only)
+#   init=/sbin/hoshizora — path to the real init (default /sbin/hoshizora)
+#
+# deferred: no LVM, no RAID, no LUKS decryption. Add when a real config
+# needs them. This script assumes root= points to a simple block device
+# or PARTUUID that the kernel already has a driver for.
+
+set -e
+
+# Mount essential virtual filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /run
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /run
+
+# Load kernel modules from initramfs (if any were pre-installed)
+for mod in /lib/modules/*/modules.dep; do
+    [ -f "$mod" ] && depmod_dir=$(dirname "$mod") && break
+done
+if [ -n "$depmod_dir" ]; then
+    for mod in $(cat /proc/cmdline | sed 's/.*modules=\([^ ]*\).*/\1/' | tr ',' ' '); do
+        modprobe -d "$depmod_dir/.." "$mod" 2>/dev/null || true
+    done
+fi
+
+# Parse kernel cmdline
+cmdline=$(cat /proc/cmdline)
+init=/sbin/hoshizora
+rootflags=ro
+for arg in $cmdline; do
+    case "$arg" in
+        root=*)        root=${arg#root=} ;;
+        rootfstype=*)  rootfstype=${arg#rootfstype=} ;;
+        rootflags=*)   rootflags=${arg#rootflags=} ;;
+        init=*)        init=${arg#init=} ;;
+        rw)            rootflags=rw ;;
+    esac
+done
+
+# Resolve PARTUUID= to a device path
+case "$root" in
+    PARTUUID=*)
+        partuuid=${root#PARTUUID=}
+        root=$(blkid -t PARTUUID="$partuuid" -o device 2>/dev/null | head -1)
+        ;;
+    UUID=*)
+        uuid=${root#UUID=}
+        root=$(blkid -t UUID="$uuid" -o device 2>/dev/null | head -1)
+        ;;
+    LABEL=*)
+        label=${root#LABEL=}
+        root=$(blkid -t LABEL="$label" -o device 2>/dev/null | head -1)
+        ;;
+esac
+
+if [ -z "$root" ] || [ ! -b "$root" ]; then
+    echo "[initramfs] ERROR: root device not found: $root" >&2
+    echo "[initramfs] Available block devices:" >&2
+    ls /dev/sd* /dev/nvme* /dev/vd* 2>/dev/null >&2 || true
+    echo "[initramfs] Dropping to emergency shell." >&2
+    exec /bin/sh
+fi
+
+# Mount root read-only (fsck happens later, hoshizora remounts RW)
+mountopts="$rootflags"
+[ -n "$rootfstype" ] && mountopts="$mountopts -t $rootfstype"
+mount $mountopts "$root" /mnt
+
+# Pivot into the real root
+mount --bind /dev /mnt/dev 2>/dev/null || true
+mount --bind /proc /mnt/proc 2>/dev/null || true
+mount --bind /sys /mnt/sys 2>/dev/null || true
+mount --bind /run /mnt/run 2>/dev/null || true
+
+# Exec the real init — hoshizora becomes PID 1
+exec switch_root /mnt "$init"

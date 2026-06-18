@@ -13,7 +13,7 @@
  *   hzctl reload                    # daemon-reload (no subject)
  *   hzctl nginx enable | disable
  *   hzctl multi-user start          # start all services in target 'multi-user'
- *   hzctl shutdown [--force]        # refuses if /run/hoshizora/sessions/* has entries
+ *   hzctl shutdown [--force]        # refuses if sessions dir has entries
  *
  * Default socket: /run/hoshizora/control (override with HZ_CTL_PATH env).
  * Default session dir: /run/hoshizora/sessions (override with HZ_SESSION_DIR).

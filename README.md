@@ -274,7 +274,6 @@ No threads, no async, no event loop library. One process, one loop, seven fds.
 ## Known TODOs
 
 - **QEMU boot testing**: `tests/qemu.sh` exists but has not been run in a real QEMU instance yet. Users with `qemu-system-x86` + `busybox` installed should try it and report issues at https://github.com/Rui-727/Hoshizora/issues. See `GUIDE.md` section 3 for instructions.
-- **initramfs `/init` script**: the shell script that mounts /proc /sys /dev /run and pivots to the real root before exec'ing hoshizora is not yet shipped. Hoshizora's `early-mounts` service covers this as a fallback, but a proper initramfs init is needed for real boots.
 
 ## License
 
