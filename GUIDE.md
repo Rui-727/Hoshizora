@@ -1,28 +1,26 @@
-# Hoshizora — Getting Started Guide
+# Hoshizora, Getting Started Guide
 
 This guide walks you through testing Hoshizora safely, from "I just cloned
 the repo" to "I booted it as PID 1 in QEMU and got a login prompt".
 
-**Testing safely:** Levels 1 and 2 are zero-risk on any host — they never
-touch your boot, your real init, or your kernel cmdline. Level 3 (QEMU
-initramfs) and level 4 (LFS in QEMU) run in a VM — close the window =
-done, no host risk. Level 5 (real hardware) requires a tested recovery
-plan; don't do it on a box you can't afford to lose.
+Testing safely: Levels 1 and 2 are zero-risk on any host. They never touch
+your boot, your real init, or your kernel cmdline. Level 3 (QEMU initramfs)
+and level 4 (LFS in QEMU) run in a VM. Close the window and you're done,
+no host risk. Level 5 (real hardware) requires a tested recovery plan.
+Don't do it on a box you can't afford to lose.
 
 Testing levels, safest first:
 
-1. **Sandbox** — `make test`, runs the self-check suite. No root, no risk.
-2. **User namespace** — `unshare -r -p -f`, fake-root PID 1 in a namespace.
+1. **Sandbox**. `make test`, runs the self-check suite. No root, no risk.
+2. **User namespace**. `unshare -r -p -f`, fake-root PID 1 in a namespace.
    No root needed, no boot changes, no real cgroups/devices.
-3. **QEMU + initramfs** — boot a real (host) kernel with Hoshizora as init.
+3. **QEMU + initramfs**. Boot a real (host) kernel with Hoshizora as init.
    Full PID 1 experience, isolated VM, no real hardware risk.
-4. **Linux From Scratch (LFS) in QEMU** — build a complete Linux system
+4. **Linux From Scratch (LFS) in QEMU**. Build a complete Linux system
    from source in a chroot, substitute hoshizora for systemd at chapter
    8.78, boot it in QEMU. The safest real-PID-1 test bed.
-5. **Real hardware** — install on a test box or spare partition. Real risk,
-   real reward. **Requires a tested recovery plan.**
-
----
+5. **Real hardware**. Install on a test box or spare partition. Real risk,
+   real reward. Requires a tested recovery plan.
 
 ## 0. Prerequisites
 
@@ -52,8 +50,6 @@ Expected: `total PASS: 65, total FAIL: 0, all checks passed.`
 If any test fails, stop and report before proceeding. The self-checks
 exercise every code path that doesn't need root.
 
----
-
 ## 1. Sandbox testing (no root, no risk)
 
 `make test` runs 8 self-checks:
@@ -77,10 +73,8 @@ bash tests/v21.sh
 ```
 
 Each script cleans up its temp files on exit. Logs go to `/tmp/hz_*.log`
-during the run and are removed at the end (unless the test fails — then
-the log is left for inspection).
-
----
+during the run and are removed at the end. If a test fails the log is
+left for inspection.
 
 ## 2. User namespace testing (no root, fake PID 1)
 
@@ -100,7 +94,7 @@ export HZ_NOTIFY_PATH="$HOME/.local/run/notify"
 #    -r = map current UID to root inside the ns
 #    -p = new PID namespace (we become PID 1)
 #    -f = fork so the new PID 1 is hoshizora, not unshare itself
-#    NOTE: do NOT use --mount-proc — it needs CAP_SYS_ADMIN in the
+#    NOTE: do NOT use --mount-proc. It needs CAP_SYS_ADMIN in the
 #    parent namespace, which non-root doesn't have.
 unshare -r -p -f ./hoshizora examples/system.bootable.hs &
 HZ_PID=$!
@@ -111,7 +105,7 @@ for i in $(seq 1 10); do
     sleep 0.2
 done
 
-# 5. Talk to it (SOV — Subject Object Verb)
+# 5. Talk to it (SOV: Subject Object Verb)
 ./hzctl list
 ./hzctl nginx status
 ./hzctl logs 20
@@ -133,7 +127,7 @@ rm -f ~/.local/run/{control,events,notify}
 
 - ✅ Control socket + `hzctl` (SOV)
 - ✅ Service lifecycle (fork+exec, respawn, on-fail)
-- ✅ `capset(2)` — works inside the user namespace (you have CAP_SYS_ADMIN etc. *inside* the ns)
+- ✅ `capset(2)`. Works inside the user namespace (you have CAP_SYS_ADMIN etc. *inside* the ns)
 - ✅ Event socket + plugins
 - ✅ sd-notify socket + READY=1 parsing
 - ✅ Config parsing (all fields)
@@ -143,10 +137,10 @@ rm -f ~/.local/run/{control,events,notify}
 
 ### What degrades gracefully
 
-- ⚠️ **fanotify** — `fanotify_init` returns EPERM without real CAP_SYS_ADMIN. Hoshizora logs a warning and watches become inert. Services still run, just no auto-reload on file changes.
-- ⚠️ **cgroup v2** — no cgroupfs access from the user namespace. Hoshizora logs a one-time warning and skips `memory.max`/`cpu.weight`/`io.weight`/`memory.high`/`cpu.max` writes.
-- ⚠️ **reboot(2)** — works inside the ns but doesn't actually reboot anything (the ns just exits). Hoshizora logs "reboot syscall failed" and falls through to halt. Tests assert this log line as proof the syscall was attempted.
-- ⚠️ **pivot_root / unshare inside a service** — `namespace: private` on a service tries `unshare(CLONE_NEWNS|NEWNET|NEWPID|NEWIPC|NEWUTS)` from inside the already-namespaced hoshizora. May fail with EPERM; hoshizora logs a warning and the service runs without isolation.
+- ⚠️ **fanotify**. `fanotify_init` returns EPERM without real CAP_SYS_ADMIN. Hoshizora logs a warning and watches become inert. Services still run, just no auto-reload on file changes.
+- ⚠️ **cgroup v2**. No cgroupfs access from the user namespace. Hoshizora logs a one-time warning and skips `memory.max`/`cpu.weight`/`io.weight`/`memory.high`/`cpu.max` writes.
+- ⚠️ **reboot(2)**. Works inside the ns but doesn't actually reboot anything (the ns just exits). Hoshizora logs "reboot syscall failed" and falls through to halt. Tests assert this log line as proof the syscall was attempted.
+- ⚠️ **pivot_root / unshare inside a service**. `namespace: private` on a service tries `unshare(CLONE_NEWNS|NEWNET|NEWPID|NEWIPC|NEWUTS)` from inside the already-namespaced hoshizora. May fail with EPERM; hoshizora logs a warning and the service runs without isolation.
 
 ### What doesn't work
 
@@ -154,8 +148,6 @@ rm -f ~/.local/run/{control,events,notify}
 - ❌ Real cgroup enforcement
 - ❌ Real fanotify watches
 - ❌ Actual poweroff/reboot of the host
-
----
 
 ## 3. QEMU + initramfs (full PID 1, isolated VM)
 
@@ -236,16 +228,14 @@ Then from the shell, you can run `/init` manually to see the error:
 strace /init
 ```
 
----
-
 ## 4. Linux From Scratch (safe real-PID-1 test bed)
 
 [LFS](https://www.linuxfromscratch.org/lfs/) is the ideal way to test
 Hoshizora as a real PID 1 without touching the host system. You build
 an entire Linux system from source in a chroot, then boot it in QEMU.
-The LFS system is fully isolated — the host is never at risk.
+The LFS system is fully isolated. The host is never at risk.
 
-**Which LFS edition to use:** The standard LFS (`stable-systemd`) builds
+Which LFS edition to use: The standard LFS (`stable-systemd`) builds
 full systemd as the init at chapter 8.78. A better starting point is the
 [LFS-OpenRC fork](https://www.linuxfromscratch.org/~zeckma/lfs-openrc/13.0/),
 which replaces systemd with OpenRC. It still extracts udev from the systemd
@@ -253,10 +243,10 @@ source (chapter 8.78 = "Udev from Systemd-259.1") but uses OpenRC (chapter
 8.81) as the init instead of full systemd. Follow the LFS-OpenRC book, but
 install hoshizora instead of OpenRC at chapter 8.81.
 
-**Why LFS is the right call here:**
-- You choose the init system — follow LFS-OpenRC, skip chapter 8.81 (OpenRC), install hoshizora instead
-- You build it in a chroot — the host kernel + init keep running
-- You boot the result in QEMU — full kernel-handoff-to-init experience, no real hardware
+Why LFS is the right call here:
+- You choose the init system. Follow LFS-OpenRC, skip chapter 8.81 (OpenRC), install hoshizora instead
+- You build it in a chroot. The host kernel + init keep running
+- You boot the result in QEMU. Full kernel-handoff-to-init experience, no real hardware
 - If it breaks: delete the LFS partition/directory, start over. Zero recovery needed.
 
 ### 4.1 Follow the LFS-OpenRC book through chapter 8.80
@@ -272,13 +262,13 @@ Do everything through chapter 8.80 (Sysklogd-2.7.2). Stop before 8.81
 - GRUB installed (chapter 8.66)
 - Coreutils, bash, util-linux (chapter 8.79), iproute2 (chapter 8.68),
   kbd (chapter 8.69), tar (chapter 8.73), udev (chapter 8.78), sysklogd
-  (chapter 8.80) — all built and installed
+  (chapter 8.80), all built and installed
 
 Then continue through chapter 9 (System Configuration) and chapter 10
 (Making the LFS System Bootable), but skip the OpenRC-specific parts:
 
-- **Chapter 9 — do everything EXCEPT** 9.5 (OpenRC Usage and Configuration)
-- **Chapter 10 — do all of it:**
+- Chapter 9, do everything EXCEPT 9.5 (OpenRC Usage and Configuration)
+- Chapter 10, do all of it:
   - 10.2 Creating the /etc/fstab File
   - 10.3 Linux-6.18.10 (build the kernel)
   - 10.4 Using GRUB to Set Up the Boot Process
@@ -293,7 +283,7 @@ After chapter 10 you'll have:
 Instead of chapter 8.81 (building OpenRC-0.63), do this:
 
 ```bash
-# Enter the LFS chroot (per LFS book chapter 7.4 — exact command from the book)
+# Enter the LFS chroot (per LFS book chapter 7.4. Exact command from the book)
 sudo chroot "$LFS" /usr/bin/env -i   \
     HOME=/root                  \
     TERM="$TERM"                \
@@ -325,7 +315,7 @@ syslog → networking → getty.
 ```bash
 cat > /etc/hoshizora/system.hs << 'EOF'
 system "lfs" {
-    # Early virtual filesystems — should already be mounted by initramfs,
+    # Early virtual filesystems. Should already be mounted by initramfs,
     # but mount them here as a safety net. See dinit's doc on why
     # /proc, /sys, /dev, /run must be up before anything else.
     service early-mounts {
@@ -333,7 +323,7 @@ system "lfs" {
         on-fail: shutdown;
     }
 
-    # udev — LFS-OpenRC chapter 8.78 extracts udev from systemd source.
+    # udev. LFS-OpenRC chapter 8.78 extracts udev from systemd source.
     # udevd needs /sys and /dev already mounted.
     service udev {
         exec: "/sbin/udevd";
@@ -341,7 +331,7 @@ system "lfs" {
         respawn: backoff(max = 5);
     }
 
-    # Trigger coldplug — process devices that existed before udevd started
+    # Trigger coldplug. Process devices that existed before udevd started.
     service udev-trigger {
         exec: "/usr/bin/udevadm" with args ["trigger", "--action=add"];
         requires: [udev];
@@ -380,14 +370,14 @@ system "lfs" {
         on-fail: shutdown;
     }
 
-    # Sysklogd — LFS-OpenRC chapter 8.80
+    # Sysklogd. LFS-OpenRC chapter 8.80
     service syslog {
         exec: "/sbin/syslogd";
         requires: [mount-all];
         respawn: backoff(max = 5);
     }
 
-    # Getty on tty1 — THE login prompt
+    # Getty on tty1. THE login prompt.
     service getty-tty1 {
         exec: "/sbin/agetty" with args ["tty1", "linux"];
         requires: [mount-all, hostname, udev-trigger, syslog];
@@ -434,7 +424,7 @@ passwd   # set root password, or just leave blank for testing
 
 ### 4.6 Boot in QEMU
 
-LFS doesn't need a separate initramfs — the kernel mounts root directly
+LFS doesn't need a separate initramfs. The kernel mounts root directly
 if your root filesystem is on a partition the kernel can find. For QEMU,
 create a disk image from your LFS build:
 
@@ -472,11 +462,11 @@ Login as root, and you're on a real LFS system with hoshizora as PID 1.
 
 | Concern                       | LFS answer                                         |
 |-------------------------------|----------------------------------------------------|
-| Brick my host?                | No — LFS is in a chroot/disk image, host untouched |
-| See real kernel→init handoff? | Yes — kernel boots, calls /sbin/init = hoshizora   |
-| Real PID 1 semantics?         | Yes — hoshizora is actual PID 1 in the VM          |
-| Real cgroups?                 | Yes — cgroup v2 works inside QEMU                  |
-| Real fanotify?                | Yes — QEMU has CAP_SYS_ADMIN in the guest          |
+| Brick my host?                | No. LFS is in a chroot/disk image, host untouched  |
+| See real kernel→init handoff? | Yes. Kernel boots, calls /sbin/init = hoshizora    |
+| Real PID 1 semantics?         | Yes. Hoshizora is actual PID 1 in the VM           |
+| Real cgroups?                 | Yes. Cgroup v2 works inside QEMU                   |
+| Real fanotify?                | Yes. QEMU has CAP_SYS_ADMIN in the guest           |
 | Recovery if broken?           | Delete the disk image, rebuild. Zero downtime.     |
 | Disk                          | 2 GB image                                         |
 | RAM                           | 1 GB guest minimum                                 |
@@ -524,14 +514,12 @@ sudo apt install qemu-system-x86 busybox-static   # or: sudo pacman -S qemu-desk
 ./tests/qemu.sh
 ```
 
-Report issues at https://github.com/Rui-727/Hoshizora/issues — include
+Report issues at https://github.com/Rui-727/Hoshizora/issues. Include
 the QEMU output (kernel boot messages + hoshizora log lines).
-
----
 
 ## 5. Real hardware (real risk)
 
-For a test box or spare partition. **Requires a tested recovery plan.**
+For a test box or spare partition. Requires a tested recovery plan.
 Don't do this on a system you can't afford to lose.
 
 ### Install
@@ -560,7 +548,7 @@ sudo mkdir -p /run/hoshizora/sessions
 Two options:
 
 ```bash
-# Option A: kernel cmdline (recommended — easy to override)
+# Option A: kernel cmdline (recommended, easy to override)
 # Add to /etc/default/grub:
 #   GRUB_CMDLINE_LINUX="init=/sbin/hoshizora"
 sudo update-grub
@@ -573,16 +561,16 @@ sudo ln -sf /sbin/hoshizora /sbin/init
 
 If hoshizora fails to boot, the kernel panics. Have a recovery path ready:
 
-1. **Keep the old init available.** Don't delete systemd/openrc/SysV init.
+1. Keep the old init available. Don't delete systemd/openrc/SysV init.
    `init=/sbin/hoshizora` just adds a new option; the old `/sbin/init`
    symlink still works if you remove `init=` from the cmdline.
 
-2. **Test the recovery path first.** Add `init=/bin/bash` to your kernel
+2. Test the recovery path first. Add `init=/bin/bash` to your kernel
    cmdline in GRUB (edit at boot time: press `e` on the GRUB entry, add
    `init=/bin/bash` to the `linux` line, Ctrl-X to boot). Verify you get
    a root shell with root mounted RO. This is your escape hatch.
 
-3. **Have a live USB ready.** If GRUB itself is broken, boot from USB,
+3. Have a live USB ready. If GRUB itself is broken, boot from USB,
    mount the root partition, fix `/etc/hoshizora/system.hs` or remove
    `init=/sbin/hoshizora` from grub config.
 
@@ -595,17 +583,17 @@ If hoshizora fails to boot, the kernel panics. Have a recovery path ready:
    - `mount-all` mounts everything in `/etc/fstab`
    - `hostname` sets the hostname
    - `getty-tty1` opens tty1 and prints the login prompt
-4. Login as root (no password by default — set one with `passwd` after first boot)
+4. Login as root (no password by default. Set one with `passwd` after first boot)
 
 ### What doesn't work out of the box
 
 Hoshizora is a supervisor, not a full system. You need to add services for:
 
-- **Networking** — `dhclient eth0` or NetworkManager as a service
-- **D-Bus** — `dbus-daemon --system` if any service needs it
-- **Display manager** — GDM/SDDM/LightDM as a service for graphical login
-- **Cron** — use Hoshizora's `every:` field on a service, or run fcron as a service
-- **Logging** — `hzlog` is included; add it as a service:
+- **Networking**. `dhclient eth0` or NetworkManager as a service
+- **D-Bus**. `dbus-daemon --system` if any service needs it
+- **Display manager**. GDM/SDDM/LightDM as a service for graphical login
+- **Cron**. Use Hoshizora's `every:` field on a service, or run fcron as a service
+- **Logging**. `hzlog` is included; add it as a service:
   ```hcl
   service hzlog {
       exec: "/usr/bin/hzlog";
@@ -641,28 +629,24 @@ Add `requires:` to enforce ordering. Hoshizora starts deps recursively
 before the dependent. If A `requires: [B]`, B starts first; if B fails,
 A doesn't start.
 
----
-
 ## 5. What Hoshizora does NOT do
 
 Hoshizora is PID 1. PID 1's job is to supervise processes, not to be:
 
-- **A login manager** — `getty`/`agetty` does that. Hoshizora starts it.
-- **A network manager** — NetworkManager, dhclient, systemd-networkd do that. Hoshizora starts one of them.
-- **A device manager** — udev/eudev does that. Hoshizora starts it.
-- **A logind** — `hz-session` (the pam_exec helper) does a minimal version. Real logind is 50k LOC; we don't.
-- **A display manager** — GDM/SDDM/LightDM do that. Hoshizora starts one.
-- **A journal** — `hzlog` writes to `/var/log/messages`. Use `logrotate` for rotation.
-- **A cron daemon** — Hoshizora's `every:` field covers interval scheduling. For cron-syntax `0 3 * * *`, run fcron as a service.
+- **A login manager**. `getty`/`agetty` does that. Hoshizora starts it.
+- **A network manager**. NetworkManager, dhclient, systemd-networkd do that. Hoshizora starts one of them.
+- **A device manager**. udev/eudev does that. Hoshizora starts it.
+- **A logind**. `hz-session` (the pam_exec helper) does a minimal version. Real logind is 50k LOC; we don't.
+- **A display manager**. GDM/SDDM/LightDM do that. Hoshizora starts one.
+- **A journal**. `hzlog` writes to `/var/log/messages`. Use `logrotate` for rotation.
+- **A cron daemon**. Hoshizora's `every:` field covers interval scheduling. For cron-syntax `0 3 * * *`, run fcron as a service.
 
 This is by design. systemd conflates PID 1 with all of the above. Hoshizora
 is just PID 1. Everything else is a service that Hoshizora starts.
 
----
-
 ## 6. Quick reference
 
-### Common commands (SOV — Subject Object Verb)
+### Common commands (SOV: Subject Object Verb)
 
 ```bash
 hzctl list                       # all services + state
@@ -740,8 +724,6 @@ system "my-host" {
     }
 }
 ```
-
----
 
 ## 7. Next steps
 
