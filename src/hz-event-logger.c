@@ -1,4 +1,4 @@
-/* hz-event-logger — example plugin for Hoshizora's event socket.
+/* hz-event-logger, example plugin for Hoshizora's event socket.
  * Connects to /run/hoshizora/events, reads event lines, optionally runs a
  * command on lines matching a prefix.
  *
@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
         if (!logf) { perror(log_path); return 1; }
     }
 
-    /* v2.1.1: fdopen the socket and use fgets — saves the byte-by-byte
+    /* v2.1.1: fdopen the socket and use fgets, saves the byte-by-byte
      * line-buffering loop. stdio buffering on a Unix socket is fine (no
      * seek needed). deferred: line longer than 511 chars is split; an
      * event source that emits >511-char lines is itself a bug. */
@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
         if (run_cmd && (!match_prefix || strncmp(line, match_prefix, strlen(match_prefix)) == 0)) {
             pid_t pid = fork();
             if (pid == 0) {
-                /* child — pipe event line to cmd's stdin */
+                /* child, pipe event line to cmd's stdin */
                 int p[2];
                 if (pipe(p) < 0) { _exit(127); }
                 dup2(p[0], 0);

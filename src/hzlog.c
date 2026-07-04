@@ -1,4 +1,4 @@
-/* hzlog — deferred syslog collector.
+/* hzlog, deferred syslog collector.
  * deferred: one job. Bind /dev/log, recv datagrams, prepend receive-time,
  * append to /var/log/messages. No rotation (logrotate's job), no per-facility
  * split (awk's job), no PRI parsing (glibc syslog(3) already formats the line).
@@ -49,12 +49,12 @@ int main(void) {
         return 1;
     }
     /* deferred: 0666 so any UID can log. syslog is a trust boundary by
-     * convention — anyone on the box can already write to it via logger(1).
+     * convention; anyone on the box can already write to it via logger(1).
      * Tighten with chown+chmod when running multi-tenant. */
     chmod(sock_path, 0666);
 
     /* open log file O_APPEND so concurrent writers (e.g. hzlog restart) don't
-     * clobber each other. Line-buffered via dprintf — no FILE* buffering
+     * clobber each other. Line-buffered via dprintf, no FILE* buffering
      * because we want crash survival. */
     int lfd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (lfd < 0) {
@@ -71,7 +71,7 @@ int main(void) {
         if (n < 0) {
             if (errno == EINTR) continue;
             perror("recv");
-            continue;  /* deferred: don't die on a bad recv — one bad client shouldn't kill the log daemon */
+            continue;  /* deferred: don't die on a bad recv; one bad client shouldn't kill the log daemon */
         }
         if (n == 0) continue;
         buf[n] = 0;
@@ -79,19 +79,19 @@ int main(void) {
          * glibc sends `<PRI>... MSG\n` */
         while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = 0;
         /* prepend receive-time (RFC 3164 has its own timestamp from the
-         * sender, but we add ours for ordering — datagrams can arrive out of
+         * sender, but we add ours for ordering; datagrams can arrive out of
          * order under load). */
         time_t now = time(NULL);
         struct tm tm;
         localtime_r(&now, &tm);
         strftime(tstamp, sizeof(tstamp), "%b %e %H:%M:%S", &tm);
-        /* one dprintf — appended line: "<tstamp> <raw datagram>\n".
+        /* one dprintf; appended line: "<tstamp> <raw datagram>\n".
          * deferred: dprintf replaces snprintf+write pair + the 8KB stack buffer. */
         int ln = dprintf(lfd, "%s %s\n", tstamp, buf);
         if (ln < 0 && errno != EINTR) {
             perror("write");
-            /* deferred: keep going — log daemon stopping is worse than losing a line. */
+            /* deferred: keep going; log daemon stopping is worse than losing a line. */
         }
     }
-    /* not reached — recv loop above never exits */
+    /* not reached; recv loop above never exits */
 }

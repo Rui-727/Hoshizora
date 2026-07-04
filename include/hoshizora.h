@@ -1,5 +1,5 @@
 /*
- * HOSHIZORA — init system (PID 1) for Linux.
+ * HOSHIZORA, init system (PID 1) for Linux.
  * deferred: minimum viable init. Parses system.hs, forks/execs services,
  * restarts crashed ones, handles SIGTERM/SIGINT for shutdown.
  */
@@ -48,14 +48,14 @@ typedef struct {
 
 /* deferred: healthy: tcp-probe("host:port", Ns) only. One builtin. */
 typedef struct {
-    char hostport[HZ_MAX_STR]; /* "127.0.0.1:80" — empty = no probe */
+    char hostport[HZ_MAX_STR]; /* "127.0.0.1:80", empty = no probe */
     int  timeout_s;
     int  fail_count;           /* runtime: consecutive failures */
 } hz_health_t;
 
 /* deferred: on-fail: restart(name) | shutdown. Fires when service transitions
  * to FAILED (exec-fail / backoff exhausted / dep failure / fork failure).
- * No chains, no nesting — operator wrote the config, cycles are their bug. */
+ * No chains, no nesting. Operator wrote the config, cycles are their bug. */
 typedef enum {
     HZ_ON_FAIL_NONE = 0,
     HZ_ON_FAIL_RESTART,   /* start target service (stop first if running) */
@@ -73,7 +73,7 @@ typedef enum {
 } hz_watch_action_t;
 
 /* v2.0: container integration. deferred: no image format, no layer storage,
- * no OCI runtime compat — that's containerd's job. Hoshizora just supervises
+ * no OCI runtime compat. That's containerd's job. Hoshizora just supervises
  * the resulting process tree. */
 typedef struct {
     int  new_ns;              /* 1 = unshare(CLONE_NEWNS|NEWNET|NEWPID|NEWIPC|NEWUTS) */
@@ -97,22 +97,22 @@ typedef struct {
     int      n_env;
     unsigned long long memory_limit; /* bytes; 0 = no limit (cgroup v2 memory.max) */
     int      cpu_weight;             /* 1-10000; 0 = default (cgroup v2 cpu.weight) */
-    int      oom_kill_group;         /* deferred: write memory.oom.group=1 — kill whole cgroup on OOM, not one proc */
+    int      oom_kill_group;         /* deferred: write memory.oom.group=1, kill whole cgroup on OOM, not one proc */
     hz_sc_t  start_cond;             /* deferred: file-exists / link-up / fs-mounted */
     hz_health_t health;              /* deferred: tcp-probe only */
     char     log_path[HZ_MAX_PATH];  /* deferred: per-service stdout/stderr redirect; empty = inherit */
     hz_on_fail_t on_fail;            /* deferred: action when service goes FAILED */
-    int      cron_interval;     /* deferred: every: "Ns" — 0 = not a cron job. Cron jobs are
+    int      cron_interval;     /* deferred: every: "Ns", 0 = not a cron job. Cron jobs are
                                  * one-shot: fork+exec, on clean exit re-arm for now+interval,
                                  * on crash use respawn logic / on-fail. Cron-syntax
-                                 * `0 3 * * *` deferred — date math, add when a real config needs it. */
-    int      timeout_start;     /* v2.0: timeout-start: Ns — if not RUNNING within N seconds, FAILED. 0 = no timeout. */
-    int      retry_after;       /* v2.0: retry-after: Ns — for services with start-condition that fail
+                                 * `0 3 * * *` deferred, date math, add when a real config needs it. */
+    int      timeout_start;     /* v2.0: timeout-start: Ns, if not RUNNING within N seconds, FAILED. 0 = no timeout. */
+    int      retry_after;       /* v2.0: retry-after: Ns, for services with start-condition that fail
                                  * to execve (exit 127). Re-arms cron_next. Default 5s. */
     int      expect_notify;     /* v2.0: 1 = service speaks sd_notify (READY=1) over the global notify socket.
-                                 * Pairs with timeout_start — timer disarms on READY. */
+                                 * Pairs with timeout_start, timer disarms on READY. */
     hz_container_t container;   /* v2.0: namespace + rootfs + binds */
-    char     listens[HZ_MAX_LISTENS][HZ_MAX_STR]; /* v2.0: socket activation — "0.0.0.0:80" or "/path/to/unix.sock" */
+    char     listens[HZ_MAX_LISTENS][HZ_MAX_STR]; /* v2.0: socket activation, "0.0.0.0:80" or "/path/to/unix.sock" */
     /* v2.2: cgroup v2 extras */
     int      io_weight;         /* 1-10000; 0 = default (cgroup v2 io.weight) */
     unsigned long long memory_high; /* bytes; 0 = no soft limit (cgroup v2 memory.high) */
@@ -125,14 +125,14 @@ typedef struct {
     /* v2.2: lifecycle hooks */
     char     pre_start[HZ_MAX_PATH];  /* shell command, run before start_service forks */
     char     post_stop[HZ_MAX_PATH];  /* shell command, run after stop_service reaps */
-    /* v2.2: watchdog — service sends WATCHDOG=1 every Ns, else FAILED */
+    /* v2.2: watchdog, service sends WATCHDOG=1 every Ns, else FAILED */
     int      watchdog_timeout;  /* 0 = disabled; else max seconds between WATCHDOG=1 */
 
     /* runtime */
     hz_state_t state;
     pid_t      pid;
     int        restart_count;
-    int        manual_stop;      /* set by `stop` cmd / shutdown — blocks respawn */
+    int        manual_stop;      /* set by `stop` cmd / shutdown, blocks respawn */
     time_t     respawn_at;       /* 0 = no pending respawn; else epoch seconds */
     time_t     cron_next;        /* 0 = not scheduled; else next fire time (mono_now units) */
     time_t     start_deadline;   /* 0 = no timeout; else mono_now() seconds by which state must be RUNNING */
@@ -148,11 +148,11 @@ typedef struct {
     hz_watch_action_t action;
     int               recursive;  /* v2.2: 1 = FAN_MARK_FILESYSTEM (whole fs) */
     /* deferred: `recursive` keyword accepted in config for compatibility but
-     * not honored — fanotify marks top dir only. Add FAN_MARK_FILESYSTEM or
+     * not honored. fanotify marks top dir only. Add FAN_MARK_FILESYSTEM or
      * recursive mount-mark logic if a real config needs it. */
 } hz_watch_t;
 
-/* v2.0: target — named collection of services. hzctl start <target> walks
+/* v2.0: target, named collection of services. hzctl start <target> walks
  * the list. deferred: isolate command (stop everything not in dep closure),
  * target-on-target deps. Add when 10+ services in a real config. */
 typedef struct {

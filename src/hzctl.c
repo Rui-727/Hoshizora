@@ -1,8 +1,8 @@
-/* hzctl — tiny control client for the hoshizora init system.
+/* hzctl, tiny control client for the hoshizora init system.
  * deferred: one file, one job. Connects to a Unix socket, sends one line
  * from argv, prints response. No flags except --force for shutdown gating.
  *
- * Usage: hzctl <command> [args...]   (SOV — Subject Object Verb)
+ * Usage: hzctl <command> [args...]   (SOV: Subject Object Verb)
  *   hzctl list
  *   hzctl status
  *   hzctl nginx status              # SOV: subject first, verb last
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    /* v2.1: shutdown gate — refuse if sessions exist, unless --force.
+    /* v2.1: shutdown gate. Refuse if sessions exist, unless --force.
      * Skip the check for non-shutdown commands (cheap: just one strcmp). */
     if (strcmp(argv[1], "shutdown") == 0 || strcmp(argv[1], "poweroff") == 0
         || strcmp(argv[1], "reboot") == 0) {
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* build command line: arg1 arg2 ... — strip any --force so the server
+    /* build command line: arg1 arg2 ... strip any --force so the server
      * doesn't have to know about it. */
     char buf[1024];
     int n = 0;

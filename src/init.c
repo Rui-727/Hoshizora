@@ -1,5 +1,5 @@
 /*
- * HOSHIZORA — init system (PID 1) for Linux/x86_64.
+ * HOSHIZORA, init system (PID 1) for Linux/x86_64.
  *
  * Real PID 1: parses system.hs, forks/execs services in dependency order,
  * restarts crashed ones with linear backoff, exposes a control socket for
@@ -16,7 +16,7 @@
  *
  * Build: make
  * Run:   ./hoshizora [system.hs]
- * Ctl:   hzctl list  (or: hzctl <name> <action> — Gentoo-style)
+ * Ctl:   hzctl list  (or: hzctl <name> <action>, Gentoo-style)
  */
 
 #include "hoshizora.h"
@@ -52,7 +52,7 @@
 #include <syslog.h>
 
 /* v2.0: capability dropping via raw capset(2) syscall. Inline the structs
- * instead of including <linux/capability.h> — musl doesn't ship kernel
+ * instead of including <linux/capability.h>, musl doesn't ship kernel
  * headers, and we only need the ABI structs + version constant. */
 #define HZ_LINUX_CAPABILITY_VERSION_3 0x20080522
 struct hz_user_cap_header_struct { unsigned int version; int pid; };
@@ -75,13 +75,13 @@ static char g_event_path[256] = "/run/hoshizora/events";
 
 /* v2.1: plugin event subscribers. Fixed-size array of accepted client fds
  * that stay open and receive broadcast event lines. Each subscriber has a
- * per-client ring buffer (HZ_SUB_BUF bytes) — event_broadcast appends to
+ * per-client ring buffer (HZ_SUB_BUF bytes), event_broadcast appends to
  * each subscriber's buffer, then flushes via non-blocking send(). If the
  * buffer fills, the event is dropped (with a one-shot warning per
  * subscriber) so a slow plugin can't lag the main poll loop. */
 #define HZ_MAX_SUBS 8
 #define HZ_SUB_BUF  4096   /* per-subscriber ring buffer. 4 KiB absorbs ~68
-                            * events of avg 60 bytes — enough headroom for a
+                            * events of avg 60 bytes, enough headroom for a
                             * briefly-stalled plugin without unbounded growth.
                             * A truly stuck plugin overflows in seconds and
                             * gets drop-warnings; that's the right behavior. */
@@ -96,18 +96,18 @@ static struct hz_sub g_subs[HZ_MAX_SUBS];
 static int g_n_subs;
 
 /* v2.0: variable substitution. Top-level $NAME = "value" pairs, substituted
- * deferred: only in TOK_STRING (not IDENT) — covers paths in exec/log/listen.
+ * deferred: only in TOK_STRING (not IDENT), covers paths in exec/log/listen.
  * Add IDENT substitution if a real config needs it. */
 static char g_var_keys[HZ_MAX_VARS][HZ_MAX_NAME];
 static char g_var_vals[HZ_MAX_VARS][HZ_MAX_STR];
 static int  g_n_vars;
 
-/* deferred: cgroup v2 magic — from <linux/magic.h>. Hard-coded to avoid the
+/* deferred: cgroup v2 magic, from <linux/magic.h>. Hard-coded to avoid the
  * extra include. */
 #define HZ_CGROUP2_SUPER_MAGIC 0x63677270
 #define HZ_CGROUP_BASE "/sys/fs/cgroup/hoshizora"
 
-/* forward decls — cgroup helpers are defined below, used by start/stop */
+/* forward decls, cgroup helpers are defined below, used by start/stop */
 static int  cgroup_v2_available(void);
 static void cgroup_setup_for(const hz_service_t *s);
 static void cgroup_assign_pid(const hz_service_t *s, pid_t pid);
@@ -139,10 +139,10 @@ static void sub_remove(int idx);
 static time_t mono_now(void);  /* v2.2: needed by handle_notify_event + start_service */
 
 /* ---------------------------------------------------------------------------
- * LOGGING — writes to stderr AND an in-memory ring buffer for `hzctl logs`.
+ * LOGGING, writes to stderr AND an in-memory ring buffer for `hzctl logs`.
  * deferred: 8 KiB ring, byte-addressed with wrap. Walked backward for tail-N.
  * ------------------------------------------------------------------------- */
-static void ctl_send(int fd, const char *s);  /* forward decl — defined in CONTROL SOCKET section */
+static void ctl_send(int fd, const char *s);  /* forward decl, defined in CONTROL SOCKET section */
 #define HZ_LOG_RING_SIZE 8192
 static char g_log_ring[HZ_LOG_RING_SIZE];
 static int  g_log_ring_pos;   /* next write offset (wraps) */
@@ -180,7 +180,7 @@ static void log_msg(const char *level, const char *fmt, ...) {
     /* v2.0: forward to syslog (hzlog collects /dev/log). No-op if /dev/log
      * is missing. Pass the formatted message directly via vsyslog so the
      * format string + args are processed by syslog, not sliced from buf
-     * with a magic offset (was buf+14 — brittle if prefix format changes). */
+     * with a magic offset (was buf+14, brittle if prefix format changes). */
     int prio = LOG_INFO;
     if (level[0] == 'W') prio = LOG_WARNING;
     else if (level[0] == 'E') prio = LOG_ERR;
@@ -193,14 +193,14 @@ static void log_msg(const char *level, const char *fmt, ...) {
 #define LOGE(...) log_msg("E", __VA_ARGS__)
 
 /* ---------------------------------------------------------------------------
- * v2.0: CAPABILITY DROPPING — raw capset(2) syscall, no libcap dependency.
+ * v2.0: CAPABILITY DROPPING, raw capset(2) syscall, no libcap dependency.
  * Drops all capabilities except what PID 1 actually needs:
- *   CAP_SYS_ADMIN  — cgroup mkdir/write, pivot_root, mount
- *   CAP_KILL       — signaling services
- *   CAP_SYS_BOOT   — reboot(2)
- *   CAP_NET_ADMIN  — bind to ports < 1024 (socket activation)
- *   CAP_SYS_PTRACE — not needed, drop
- * deferred: per-service capabilities: field — add when a config asks. */
+ *   CAP_SYS_ADMIN  : cgroup mkdir/write, pivot_root, mount
+ *   CAP_KILL       : signaling services
+ *   CAP_SYS_BOOT   : reboot(2)
+ *   CAP_NET_ADMIN  : bind to ports < 1024 (socket activation)
+ *   CAP_SYS_PTRACE : not needed, drop
+ * deferred: per-service capabilities: field, add when a config asks. */
 static int drop_capabilities(void) {
     struct hz_user_cap_header_struct hdr = { .version = HZ_LINUX_CAPABILITY_VERSION_3, .pid = 0 };
     struct hz_user_cap_data_struct data[2] = {0};
@@ -217,7 +217,7 @@ static int drop_capabilities(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * v2.0: VARIABLE SUBSTITUTION — replace $NAME with value in a string buffer.
+ * v2.0: VARIABLE SUBSTITUTION, replace $NAME with value in a string buffer.
  * Top-level $NAME = "value" pairs collected during parse. Only applied to
  * TOK_STRING values (paths, exec, log, listen). deferred: no IDENT subst. */
 static void subst_vars(char *buf, size_t bufsz) {
@@ -252,7 +252,7 @@ static void subst_vars(char *buf, size_t bufsz) {
                 i = j;
                 continue;
             }
-            /* unknown var — leave as-is */
+            /* unknown var, leave as-is */
             out[oi++] = buf[i++];
         } else {
             out[oi++] = buf[i++];
@@ -264,7 +264,7 @@ static void subst_vars(char *buf, size_t bufsz) {
 }
 
 /* ---------------------------------------------------------------------------
- * v2.0: SOCKET ACTIVATION — bind listening sockets at startup, pass via fd 3+
+ * v2.0: SOCKET ACTIVATION, bind listening sockets at startup, pass via fd 3+
  * to started services. deferred: LISTEN_FDS env var per systemd convention
  * (we use a custom env HZ_LISTEN_FDS to avoid colliding with real systemd
  * services that expect specific fd-passing semantics). */
@@ -288,7 +288,7 @@ static int setup_listen_sockets(void) {
                     close(fd); continue;
                 }
             } else {
-                /* tcp — parse "host:port" */
+                /* tcp, parse "host:port" */
                 char host[64]; int port;
                 if (parse_hostport(addr, host, sizeof(host), &port) != 0) {
                     LOGW("%s: bad listen: %s", s->name, addr); continue;
@@ -320,8 +320,8 @@ static int setup_listen_sockets(void) {
     return bound;
 }
 
-/* v2.1: helper — bind a Unix socket at `path` (env-override via `env_name`).
- * Used by notify + event sockets (both 0666, any UID can connect — they're
+/* v2.1: helper, bind a Unix socket at `path` (env-override via `env_name`).
+ * Used by notify + event sockets (both 0666, any UID can connect, they're
  * public input paths from untrusted services/plugins). Control socket stays
  * inline because it uses 0660 (root-only). sock_type = SOCK_STREAM or
  * SOCK_DGRAM. do_listen = 1 calls listen(). Returns bound fd or -1. */
@@ -358,7 +358,7 @@ static int setup_unix_socket(const char *env_name, const char *default_path,
 }
 
 /* ---------------------------------------------------------------------------
- * v2.0: sd-notify — one global Unix datagram socket at /run/hoshizora/notify.
+ * v2.0: sd-notify, one global Unix datagram socket at /run/hoshizora/notify.
  * Services send "<service-name> READY=1" or "<service-name> STOPPING=1".
  * deferred: full sd_notify protocol (status text, errno, watchdog). */
 static int setup_notify_socket(void) {
@@ -374,7 +374,7 @@ static void handle_notify_event(void) {
     ssize_t n = recv(g_notifyfd, buf, sizeof(buf) - 1, 0);
     if (n <= 0) return;
     buf[n] = 0;
-    /* parse "<name> READY=1" — name is up to first space, then key=val */
+    /* parse "<name> READY=1", name is up to first space, then key=val */
     char *sp = strchr(buf, ' ');
     if (!sp) return;
     *sp = 0;
@@ -392,10 +392,10 @@ static void handle_notify_event(void) {
         LOGI("%s: stopping (sd_notify)", s->name);
         event_broadcast("STOPPING service=%s\n", s->name);
     } else if (strstr(rest, "WATCHDOG=1")) {
-        /* v2.2: watchdog — service is alive, reset the timer. */
+        /* v2.2: watchdog, service is alive, reset the timer. */
         s->watchdog_last = mono_now();
     } else if (strstr(rest, "ERRNO=") || strstr(rest, "BUSERROR=")) {
-        /* v2.2: notify-failure — service reports why it's about to fail.
+        /* v2.2: notify-failure, service reports why it's about to fail.
          * Log the full message; mark_failed fires when the process exits. */
         LOGW("%s: sd_notify failure: %s", s->name, rest);
         event_broadcast("NOTIFY_FAILURE service=%s msg=%s\n", s->name, rest);
@@ -403,7 +403,7 @@ static void handle_notify_event(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * v2.1: PLUGIN EVENT SOCKET — broadcast state changes to subscriber processes.
+ * v2.1: PLUGIN EVENT SOCKET, broadcast state changes to subscriber processes.
  * Plugins connect to /run/hoshizora/events and stay open; hoshizora writes
  * event lines like "START service=nginx pid=1234" to all subscribers.
  * deferred: no per-client buffering, no flow control, no event filtering.
@@ -457,7 +457,7 @@ static int sub_flush(struct hz_sub *s) {
         /* EPIPE / ECONNRESET / other → subscriber gone */
         return -1;
     }
-    /* buffer empty — reset head/tail to 0 to maximize contiguous space */
+    /* buffer empty, reset head/tail to 0 to maximize contiguous space */
     s->head = s->tail = 0;
     return 0;
 }
@@ -466,7 +466,7 @@ static int sub_flush(struct hz_sub *s) {
  * drop the event (mark s->dropped so we warn once per burst). Returns 0
  * on success, -1 if the subscriber should be removed (gone). */
 static int sub_append(struct hz_sub *s, const char *data, int n) {
-    /* try to flush first — maybe there's room after a send */
+    /* try to flush first, maybe there's room after a send */
     if (sub_flush(s) < 0) return -1;
     int used = (s->tail - s->head + HZ_SUB_BUF) % HZ_SUB_BUF;
     int free = HZ_SUB_BUF - used - 1;  /* -1 to distinguish full from empty */
@@ -487,7 +487,7 @@ static int sub_append(struct hz_sub *s, const char *data, int n) {
     }
     s->tail = (s->tail + n) % HZ_SUB_BUF;
     s->dropped = 0;  /* successful append resets the drop-warning state */
-    /* try to send immediately — if it would block, the data stays buffered */
+    /* try to send immediately, if it would block, the data stays buffered */
     if (sub_flush(s) < 0) return -1;
     return 0;
 }
@@ -506,7 +506,7 @@ static void event_broadcast(const char *fmt, ...) {
     while (i < g_n_subs) {
         if (sub_append(&g_subs[i], buf, n) < 0) {
             sub_remove(i);
-            continue;  /* don't increment i — new sub at same slot */
+            continue;  /* don't increment i, new sub at same slot */
         }
         i++;
     }
@@ -527,19 +527,19 @@ static void event_flush_all(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * v2.0: CONTAINER INTEGRATION — unshare + pivot_root + bind mounts.
+ * v2.0: CONTAINER INTEGRATION, unshare + pivot_root + bind mounts.
  * Called in child post-fork, pre-exec.  deferred: no image format, no OCI. */
 static int setup_container_child(const hz_service_t *s) {
     if (!s->container.new_ns && !s->container.rootfs[0]) return 0;
     if (s->container.new_ns) {
-        /* v2.2: full namespace isolation — added NEWIPC|NEWUTS. deferred: NEWUSER
+        /* v2.2: full namespace isolation, added NEWIPC|NEWUTS. deferred: NEWUSER
          * needs uid/gid mapping setup, skip until a real config asks. */
         if (unshare(CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWUTS) < 0) {
             LOGW("%s: unshare: %s — running without namespace isolation", s->name, strerror(errno));
-            /* keep going — degraded mode, not fatal */
+            /* keep going, degraded mode, not fatal */
         }
         /* deferred: bring up loopback in the new netns. Requires struct ifreq
-         * from <net/if.h> — including it just for one ioctl is heavier than
+         * from <net/if.h>, including it just for one ioctl is heavier than
          * the call is worth. Add when a real config uses namespace: private
          * AND needs local networking inside the namespace. */
     }
@@ -562,7 +562,7 @@ static int setup_container_child(const hz_service_t *s) {
         umount2("/put_old", MNT_DETACH);
         rmdir("/put_old");
     }
-    /* bind mounts — applied after pivot if rootfs is set */
+    /* bind mounts, applied after pivot if rootfs is set */
     for (int i = 0; i < s->container.n_binds; i++) {
         char src[HZ_MAX_PATH], dst[HZ_MAX_PATH];
         if (sscanf(s->container.binds[i], "%255[^:]:%255s", src, dst) != 2) continue;
@@ -596,7 +596,7 @@ static void logs_dump(int cfd, int n_lines) {
     if (count >= n_lines && last_nl >= 0) {
         dump_start = (last_nl + 1) % HZ_LOG_RING_SIZE;
     } else {
-        /* fewer than n_lines in ring — dump everything */
+        /* fewer than n_lines in ring, dump everything */
         dump_start = (g_log_ring_pos - g_log_ring_used + HZ_LOG_RING_SIZE) % HZ_LOG_RING_SIZE;
     }
     dump_len = (g_log_ring_pos - dump_start + HZ_LOG_RING_SIZE) % HZ_LOG_RING_SIZE;
@@ -615,7 +615,7 @@ static void logs_dump(int cfd, int n_lines) {
 }
 
 /* ---------------------------------------------------------------------------
- * CONFIG PARSER — token-stream walker for the system.hs subset.
+ * CONFIG PARSER, token-stream walker for the system.hs subset.
  * Recognizes: service NAME { exec, requires, respawn, environment }.
  * Ignores everything else (intents, watch, starfield, memory-limit, etc.)
  * with a deferred comment marking them as YAGNI.
@@ -683,7 +683,7 @@ static int next_token(lexer_t *L, tok_t *t) {
         return 1;
     }
 
-    /* identifier — v2.0: `$` is a valid start char for top-level variable
+    /* identifier, v2.0: `$` is a valid start char for top-level variable
      * names ($NAME = "value"). deferred: no other special chars. */
     if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$') {
         size_t i = 0;
@@ -715,7 +715,7 @@ static int peek_ident_is(lexer_t *L, const char *kw) {
 
 /* deferred: skip an unknown field's value inside a service/watch block.
  * Stops at: top-level ';' (statement terminator), OR unmatched '}'/']'/')'
- * at depth 0 (block close — rewind one char so caller's loop sees it).
+ * at depth 0 (block close, rewind one char so caller's loop sees it).
  * Tracks {}/[]/() nesting so a `[ ... ]` inside the value doesn't end early. */
 static void skip_unknown_field(lexer_t *L) {
     tok_t t;
@@ -793,7 +793,7 @@ static int parse_hostport(const char *str, char *host_out, int host_sz, int *por
 
 /* deferred: parse size suffixes for memory-limit. Returns 0 on parse error.
  * Accepts: 256MiB, 1GiB, 512KiB, 1024 (bare = bytes). Decimal suffixes (KB/MB)
- * dropped — README documents binary only, cgroup v2 memory.max wants bytes. */
+ * dropped, README documents binary only, cgroup v2 memory.max wants bytes. */
 static unsigned long long parse_size(const char *s) {
     char *end;
     unsigned long long n = strtoull(s, &end, 10);
@@ -808,7 +808,7 @@ static unsigned long long parse_size(const char *s) {
 }
 
 /* parse a string list: [ "a", "b" ] or [ ident, ident ] */
-/* deferred: generic over element size — used for both deps[HZ_MAX_NAME]
+/* deferred: generic over element size, used for both deps[HZ_MAX_NAME]
  * and args[HZ_MAX_STR]. One function, two callers, no template needed. */
 static int parse_string_list(lexer_t *L, void *out, size_t elem_size, int max, int *n) {
     char *base = (char*)out;
@@ -904,7 +904,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->max_restarts = 5;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             /* accept: backoff(max = N, base = Xs); or just ;
-             * deferred: extract max=N into max_restarts. base= ignored —
+             * deferred: extract max=N into max_restarts. base= ignored.
              * respawn uses linear restart_count-second delay, capped at 30. */
             int depth = 0;
             int seen_max = 0;
@@ -930,7 +930,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (!next_token(L, &t)) return -1;
             /* accept STRING ("256MiB") or IDENT/NUMBER (256MiB unquoted).
              * deferred: lexer splits `256MiB` into NUMBER "256" + IDENT "MiB"
-             * — re-combine so parse_size sees the suffix. */
+             *, re-combine so parse_size sees the suffix. */
             char val[HZ_MAX_STR] = {0};
             if (t.kind == TOK_STRING) {
                 strncpy(val, t.text, sizeof(val) - 1);
@@ -961,8 +961,8 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
                 return -1;
             }
         } else if (strcmp(t.text, "oom-kill") == 0) {
-            /* deferred: oom-kill: group; — writes memory.oom.group=1 in cgroup.
-             * No value variant (oom-kill: process) — group is the only sane
+            /* deferred: oom-kill: group;, writes memory.oom.group=1 in cgroup.
+             * No value variant (oom-kill: process), group is the only sane
              * choice for a supervised service. Add when a config needs the
              * per-process behavior. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
@@ -972,7 +972,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             }
             s->oom_kill_group = 1;
         } else if (strcmp(t.text, "log") == 0) {
-            /* deferred: log: "path"; — redirect service stdout+stderr to this
+            /* deferred: log: "path";, redirect service stdout+stderr to this
              * file. Default (no log: directive) is /var/log/hoshizora/<name>.log
              * if that dir exists, else inherit hoshizora's stderr. Empty string
              * disables redirection. */
@@ -1008,7 +1008,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
                 strncpy(*parg, t.text, HZ_MAX_PATH - 1);
                 (*parg)[HZ_MAX_PATH - 1] = 0;
                 if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ')') return -1;
-                /* optional `and <builtin>` — only one level deep */
+                /* optional `and <builtin>`, only one level deep */
                 if (peek_ident_is(L, "and")) {
                     next_token(L, &t); /* consume `and` */
                     if (++slot > 1) { LOGE("%s: start-condition supports max 2 builtins", s->name); return -1; }
@@ -1036,7 +1036,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->health.hostport[HZ_MAX_STR - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ',') return -1;
             if (!next_token(L, &t) || t.kind != TOK_NUMBER) return -1;
-            /* v2.3: accept "5s" form — lexer splits into NUMBER "5" + IDENT "s".
+            /* v2.3: accept "5s" form, lexer splits into NUMBER "5" + IDENT "s".
              * Peek and consume the trailing IDENT if it's a single-char unit. */
             lexer_t save = *L; tok_t t2;
             if (next_token(&save, &t2) && t2.kind == TOK_IDENT && strlen(t2.text) <= 2) {
@@ -1072,9 +1072,9 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "every") == 0) {
-            /* deferred: every: "Ns"; — interval in seconds. Service becomes a cron
+            /* deferred: every: "Ns";, interval in seconds. Service becomes a cron
              * job: one-shot fork+exec, re-arms on clean exit. Cron-syntax
-             * `0 3 * * *` deferred — needs date math, add when a real config
+             * `0 3 * * *` deferred, needs date math, add when a real config
              * asks for it. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
@@ -1082,14 +1082,14 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (s->cron_interval < 1) { LOGE("%s: bad every: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "timeout-start") == 0) {
-            /* v2.0: timeout-start: Ns — if not RUNNING within N seconds, FAILED. */
+            /* v2.0: timeout-start: Ns, if not RUNNING within N seconds, FAILED. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             s->timeout_start = parse_duration(t.text);
             if (s->timeout_start < 1) { LOGE("%s: bad timeout-start: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "retry-after") == 0) {
-            /* v2.0: retry-after: Ns — services with start-condition that fail
+            /* v2.0: retry-after: Ns, services with start-condition that fail
              * to execve (exit 127) re-arm cron_next = now + retry_after. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
@@ -1097,7 +1097,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (s->retry_after < 1) { LOGE("%s: bad retry-after: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "expect-notify") == 0) {
-            /* v2.0: expect-notify: true; — service speaks sd_notify. Pairs
+            /* v2.0: expect-notify: true;, service speaks sd_notify. Pairs
              * with timeout-start; timer disarms on READY=1. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "true") != 0) {
@@ -1106,7 +1106,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->expect_notify = 1;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "listen") == 0) {
-            /* v2.0: listen: "addr"; — socket activation. Hoshizora binds,
+            /* v2.0: listen: "addr";, socket activation. Hoshizora binds,
              * child inherits fd via HZ_LISTEN_FDS env var. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
@@ -1117,7 +1117,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->listens[idx][HZ_MAX_STR - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "namespace") == 0) {
-            /* v2.0: namespace: private; — unshare mount+net+pid namespaces. */
+            /* v2.0: namespace: private;, unshare mount+net+pid namespaces. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "private") != 0) {
                 LOGE("%s: namespace: only `private` supported", s->name); return -1;
@@ -1125,14 +1125,14 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->container.new_ns = 1;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "rootfs") == 0) {
-            /* v2.0: rootfs: "/path"; — pivot_root into this dir before exec. */
+            /* v2.0: rootfs: "/path";, pivot_root into this dir before exec. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             strncpy(s->container.rootfs, t.text, HZ_MAX_PATH - 1);
             s->container.rootfs[HZ_MAX_PATH - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "bind") == 0) {
-            /* v2.0: bind: "src:dst"; — bind-mount src onto dst in child ns. */
+            /* v2.0: bind: "src:dst";, bind-mount src onto dst in child ns. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             if (s->container.n_binds < HZ_MAX_BINDS) {
@@ -1142,7 +1142,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             } else { LOGE("%s: too many bind: entries", s->name); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "rootfs-readonly") == 0) {
-            /* v2.2: rootfs-readonly: true; — remount rootfs MS_RDONLY after pivot. */
+            /* v2.2: rootfs-readonly: true;, remount rootfs MS_RDONLY after pivot. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "true") != 0) {
                 LOGE("%s: rootfs-readonly: only `true` supported", s->name); return -1;
@@ -1150,7 +1150,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->container.readonly = 1;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "io-weight") == 0) {
-            /* v2.2: io-weight: N (1-10000); — cgroup v2 io.weight */
+            /* v2.2: io-weight: N (1-10000);, cgroup v2 io.weight */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_NUMBER) return -1;
             s->io_weight = atoi(t.text);
@@ -1159,7 +1159,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "memory-high") == 0) {
-            /* v2.2: memory-high: 512MiB; — cgroup v2 memory.high (soft limit) */
+            /* v2.2: memory-high: 512MiB;, cgroup v2 memory.high (soft limit) */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t)) return -1;
             char val[HZ_MAX_STR] = {0};
@@ -1176,7 +1176,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             if (s->memory_high == 0) { LOGE("%s: bad memory-high: %s", s->name, val); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "cpu-max") == 0) {
-            /* v2.2: cpu-max: "50%"; or "quota period" — cgroup v2 cpu.max.
+            /* v2.2: cpu-max: "50%"; or "quota period", cgroup v2 cpu.max.
              * "50%" → quota = period * 50 / 100 (period default 100000us). */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
@@ -1190,7 +1190,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             } else { LOGE("%s: bad cpu-max: %s", s->name, t.text); return -1; }
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "no-new-privs") == 0) {
-            /* v2.2: no-new-privs: true; — prctl(PR_SET_NO_NEW_PRIVS) in child. */
+            /* v2.2: no-new-privs: true;, prctl(PR_SET_NO_NEW_PRIVS) in child. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_IDENT || strcmp(t.text, "true") != 0) {
                 LOGE("%s: no-new-privs: only `true` supported", s->name); return -1;
@@ -1198,7 +1198,7 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->no_new_privs = 1;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "run-as") == 0) {
-            /* v2.2: run-as: "uid:gid"; — setuid/setgid before exec. */
+            /* v2.2: run-as: "uid:gid";, setuid/setgid before exec. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             unsigned int u, g;
@@ -1208,21 +1208,21 @@ static int parse_service_block(lexer_t *L, hz_service_t *s) {
             s->run_as_uid = u; s->run_as_gid = g;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "pre-start") == 0) {
-            /* v2.2: pre-start: "cmd"; — shell command run before fork. */
+            /* v2.2: pre-start: "cmd";, shell command run before fork. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             strncpy(s->pre_start, t.text, HZ_MAX_PATH - 1);
             s->pre_start[HZ_MAX_PATH - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "post-stop") == 0) {
-            /* v2.2: post-stop: "cmd"; — shell command run after stop reaps. */
+            /* v2.2: post-stop: "cmd";, shell command run after stop reaps. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
             strncpy(s->post_stop, t.text, HZ_MAX_PATH - 1);
             s->post_stop[HZ_MAX_PATH - 1] = 0;
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ';') return -1;
         } else if (strcmp(t.text, "watchdog-timeout") == 0) {
-            /* v2.2: watchdog-timeout: Ns; — service must send WATCHDOG=1
+            /* v2.2: watchdog-timeout: Ns;, service must send WATCHDOG=1
              * within this interval or be marked FAILED. */
             if (!next_token(L, &t) || t.kind != TOK_PUNCT || t.text[0] != ':') return -1;
             if (!next_token(L, &t) || t.kind != TOK_STRING) return -1;
@@ -1270,7 +1270,7 @@ static int parse_watch_block(lexer_t *L, hz_watch_t *w) {
 /* parse top-level: walk tokens, only act on `service IDENT {` and
  * `watch STRING [recursive] {`, ignore everything else. Non-service/watch
  * constructs (system "name" {...}, intents {...}, starfield {...}) are
- * skipped naturally — their braces and strings get filtered as non-IDENT
+ * skipped naturally, their braces and strings get filtered as non-IDENT
  * tokens, their closing } is consumed by the punctuation case. deferred: no
  * depth tracking needed. */
 static int parse_config(lexer_t *L) {
@@ -1358,7 +1358,7 @@ static int parse_config(lexer_t *L) {
             }
             strncpy(w->path, t.text, HZ_MAX_PATH - 1);
             w->path[HZ_MAX_PATH - 1] = 0;
-            /* v2.2: optional `recursive` keyword — now honored via
+            /* v2.2: optional `recursive` keyword, now honored via
              * FAN_MARK_FILESYSTEM (kernel ≥5.16), falls back to top-dir on
              * older kernels. */
             if (peek_ident_is(L, "recursive")) {
@@ -1384,7 +1384,7 @@ static int parse_config(lexer_t *L) {
             continue;
         }
         if (strcmp(t.text, "target") == 0) {
-            /* v2.0: target NAME { requires: [a, b, c]; } — named service group.
+            /* v2.0: target NAME { requires: [a, b, c]; }, named service group.
              * hzctl start <target> walks the list. deferred: no isolate, no
              * target-on-target deps. */
             if (!next_token(L, &t) || t.kind != TOK_IDENT) {
@@ -1422,7 +1422,7 @@ static int parse_config(lexer_t *L) {
          * on-change, reload, restart, recursive, enabled, log-size,
          * exclude-paths, every, max, base, backoff, capabilities,
          * transactional, snapshot, start-condition,
-         * healthy) — either handled inside parse_service_block or
+         * healthy), either handled inside parse_service_block or
          * parse_watch_block (when inside a block) or intentionally ignored
          * (when top-level or inside intents/starfield). Add handling when a
          * feature is actually requested. */
@@ -1486,7 +1486,7 @@ static int sc_check_one(hz_sc_kind_t kind, const char *arg) {
     case HZ_SC_FILE_EXISTS: return access(arg, F_OK) == 0;
     case HZ_SC_LINK_UP: {
         /* deferred: operstate says "unknown" for lo on Linux (not "up"), so
-         * check the flags file for IFF_UP (0x1) instead — works for all ifaces. */
+         * check the flags file for IFF_UP (0x1) instead, works for all ifaces. */
         char p[HZ_MAX_PATH + 64];
         snprintf(p, sizeof(p), "/sys/class/net/%s/flags", arg);
         int fd = open(p, O_RDONLY);
@@ -1495,7 +1495,7 @@ static int sc_check_one(hz_sc_kind_t kind, const char *arg) {
         ssize_t n = read(fd, buf, sizeof(buf) - 1);
         close(fd);
         if (n <= 0) return 0;
-        /* flags file is "0x<padded-hex>\n" — parse as hex, check IFF_UP bit */
+        /* flags file is "0x<padded-hex>\n", parse as hex, check IFF_UP bit */
         unsigned int flags = 0;
         sscanf(buf, "%x", &flags);
         return (flags & 0x1) != 0;
@@ -1527,9 +1527,9 @@ static int evaluate_sc(const hz_sc_t *sc) {
     return 1;
 }
 
-/* deferred: tcp-probe — connect() with SO_SNDTIMEO. Returns 0 on success
+/* deferred: tcp-probe, connect() with SO_SNDTIMEO. Returns 0 on success
  * (connection established), -1 on failure/timeout. Doesn't send/receive
- * anything — just checks the listener is alive. */
+ * anything, just checks the listener is alive. */
 static int tcp_probe(const char *hostport, int timeout_s) {
     char host[128]; int port;
     if (parse_hostport(hostport, host, sizeof(host), &port) != 0) return -1;
@@ -1568,10 +1568,10 @@ static int service_enabled(const hz_service_t *s) {
     return access(p, F_OK) != 0;  /* file absent = enabled */
 }
 
-/* deferred: virtual intents — built-in dep names that resolve to runtime
+/* deferred: virtual intents, built-in dep names that resolve to runtime
  * conditions, not services. Currently just `network_ready`: true iff any
  * non-lo interface has IFF_UP set. system.hs uses `requires: [network_ready]`
- * without defining a network_ready service — this makes that work without
+ * without defining a network_ready service, this makes that work without
  * forcing the operator to write a dummy service.
  *
  * Returns 1 if `name` is a known virtual intent AND its condition is true.
@@ -1581,7 +1581,7 @@ static int service_enabled(const hz_service_t *s) {
 static int virtual_dep_running(const char *name) {
     if (strcmp(name, "network_ready") != 0 && strcmp(name, "network-ready") != 0)
         return -1;
-    /* walk /sys/class/net/ — any non-lo iface with IFF_UP (0x1) = ready */
+    /* walk /sys/class/net/, any non-lo iface with IFF_UP (0x1) = ready */
     DIR *d = opendir("/sys/class/net");
     if (!d) return 0;
     int ready = 0;
@@ -1608,7 +1608,7 @@ static int virtual_dep_running(const char *name) {
 /* deferred: on-fail dispatcher. Called from mark_failed() whenever a service
  * transitions to FAILED. RESTART stops + starts target; SHUTDOWN sets the
  * g_shutdown flag (main loop will pick it up next iteration). No cycle guard
- * — operator's config, their bug to see in logs. */
+ *, operator's config, their bug to see in logs. */
 static time_t mono_now(void);               /* forward: defined below */
 static void on_fail_trigger(hz_service_t *s) {
     if (s->on_fail.kind == HZ_ON_FAIL_NONE) return;
@@ -1639,13 +1639,13 @@ static int start_service(hz_service_t *s) {
 
     /* deferred: ephemeral enable/disable marker. `disable X` writes the file;
      * we skip start until `enable X` removes it. Operator can still `stop X`
-     * while disabled — start is the only thing blocked. */
+     * while disabled, start is the only thing blocked. */
     if (!service_enabled(s)) {
         LOGI("%s: disabled — skipping start", s->name);
         return 0;
     }
 
-    /* deferred: start-condition — if false, skip start (stay STOPPED).
+    /* deferred: start-condition, if false, skip start (stay STOPPED).
      * Re-evaluated each call so the operator can `start X` again once the
      * condition becomes true (e.g. mount appeared). */
     if (s->start_cond.kind1 != HZ_SC_NONE && !evaluate_sc(&s->start_cond)) {
@@ -1657,10 +1657,10 @@ static int start_service(hz_service_t *s) {
     for (int i = 0; i < s->n_deps; i++) {
         hz_service_t *d = find_service(s->deps[i]);
         if (!d) {
-            /* deferred: not a real service — check virtual intents
+            /* deferred: not a real service, check virtual intents
              * (network_ready). If true, treat dep as satisfied; if false,
              * refuse to start (this service would fail without networking).
-             * If -1 (not virtual either), warn and continue — preserves
+             * If -1 (not virtual either), warn and continue, preserves
              * old behavior of tolerating forward references. */
             int v = virtual_dep_running(s->deps[i]);
             if (v == 1) continue;
@@ -1688,11 +1688,11 @@ static int start_service(hz_service_t *s) {
         return -1;
     }
 
-    /* deferred: cgroup v2 — create per-service dir, write limits. No-op if
+    /* deferred: cgroup v2, create per-service dir, write limits. No-op if
      * cgroup v2 isn't mounted (LOGW once at startup). */
     cgroup_setup_for(s);
 
-    /* v2.2: pre-start hook — run a shell command before forking. Failure
+    /* v2.2: pre-start hook, run a shell command before forking. Failure
      * (non-zero exit) aborts the start. deferred: no timeout on pre-start. */
     if (s->pre_start[0]) {
         int rc = system(s->pre_start);
@@ -1715,19 +1715,19 @@ static int start_service(hz_service_t *s) {
         sigset_t empty; sigemptyset(&empty);
         sigprocmask(SIG_SETMASK, &empty, NULL);
         /* v2.0: container integration (namespace + pivot_root + binds).
-         * Failure here is logged but not fatal — degraded mode. */
+         * Failure here is logged but not fatal, degraded mode. */
         setup_container_child(s);
-        /* v2.2: rootfs-readonly — remount the new root MS_RDONLY after pivot.
+        /* v2.2: rootfs-readonly, remount the new root MS_RDONLY after pivot.
          * Only meaningful if rootfs: is set; no-op otherwise. */
         if (s->container.rootfs[0] && s->container.readonly) {
             mount(NULL, "/", NULL, MS_REMOUNT | MS_RDONLY, NULL);
         }
-        /* v2.2: no-new-privs — prctl before exec so the service (and its
+        /* v2.2: no-new-privs, prctl before exec so the service (and its
          * children) can't gain caps via setuid binaries. */
         if (s->no_new_privs) {
             prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
         }
-        /* v2.2: per-service-user — setgid first (setuid would drop the
+        /* v2.2: per-service-user, setgid first (setuid would drop the
          * ability to setgid), then setuid, then clear supplementary groups. */
         if (s->run_as_gid) {
             if (setgid(s->run_as_gid) < 0) {
@@ -1741,7 +1741,7 @@ static int start_service(hz_service_t *s) {
                 _exit(127);
             }
         }
-        /* v2.0: socket activation — dup listen fds to 3, 4, ... so the child
+        /* v2.0: socket activation, dup listen fds to 3, 4, ... so the child
          * inherits them and can accept() directly. Set HZ_LISTEN_FDS env. */
         int nfd = 0;
         for (int i = 0; i < s->n_listen_fds; i++) {
@@ -1758,7 +1758,7 @@ static int start_service(hz_service_t *s) {
         if (s->log_path[0]) {
             int lfd = open(s->log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
             if (lfd >= 0) { dup2(lfd, 1); dup2(lfd, 2); if (lfd > 2) close(lfd); }
-            /* else: open failed — leave stdout/stderr inherited. LOGE from
+            /* else: open failed, leave stdout/stderr inherited. LOGE from
              * child would go to hoshizora's stderr; not done here to keep
              * the child silent post-fork (errors exit 127, parent logs). */
         }
@@ -1768,7 +1768,7 @@ static int start_service(hz_service_t *s) {
         for (int i = 0; i < s->argc; i++) argv[i + 1] = s->argv[i];
         argv[s->argc + 1] = NULL;
         /* build envp: inherited env + service env + v2.0 extras.
-         * deferred: no free() — child execs or _exit()s, leaks don't matter. */
+         * deferred: no free(), child execs or _exit()s, leaks don't matter. */
         extern char **environ;
         char *envp[HZ_MAX_ENV + 64];
         int ei = 0;
@@ -1813,14 +1813,14 @@ static int start_service(hz_service_t *s) {
 
 static int stop_service(hz_service_t *s) {
     /* deferred: delegate to stop_parallel with a 1-element list. Old inline
-     * SIGTERM→5s-wait→SIGKILL was a copy of stop_parallel's logic — one
+     * SIGTERM→5s-wait→SIGKILL was a copy of stop_parallel's logic, one
      * implementation, two callers (here + shutdown_all/reload). */
     s->manual_stop = 1;  /* even if not running, mark so pending respawn cancels */
     s->respawn_at  = 0;
     if (s->state != HZ_S_RUNNING || s->pid <= 0) return 0;
     hz_service_t *list[1] = { s };
     stop_parallel(list, 1, "stop");
-    /* v2.2: post-stop hook — fire after the service is reaped. Best-effort:
+    /* v2.2: post-stop hook, fire after the service is reaped. Best-effort:
      * no timeout, no status check, just runs. deferred: log exit code. */
     if (s->post_stop[0]) {
         int rc = system(s->post_stop);
@@ -1829,14 +1829,14 @@ static int stop_service(hz_service_t *s) {
     return 0;
 }
 
-/* deferred: signals handled via signalfd in the main poll loop — see
+/* deferred: signals handled via signalfd in the main poll loop, see
  * setup_signalfd() and handle_signal() further down. No async-signal
  * handlers, no flag globals (except g_shutdown for the main loop test). */
 
 static void reload_config(const char *path);
 
 /* ---------------------------------------------------------------------------
- * CGROUPS v2 — per-service resource limits. If cgroup v2 isn't mounted at
+ * CGROUPS v2, per-service resource limits. If cgroup v2 isn't mounted at
  * /sys/fs/cgroup, all functions are no-ops and services run unconstrained.
  * deferred: mkdir per-service dir, write memory.max + cpu.weight, assign child
  * pid to cgroup.procs. Teardown rmdir's the dir after the process exits.
@@ -1866,7 +1866,7 @@ static void cgroup_setup_for(const hz_service_t *s) {
         return;
     }
     char file[HZ_MAX_PATH + 32];
-    /* v2.2 helper — write a cgroup file with an integer/string value. */
+    /* v2.2 helper, write a cgroup file with an integer/string value. */
     #define HZ_CG_WRITE(field, fmt, val) do { \
         snprintf(file, sizeof(file), "%s/%s", path, field); \
         int fd_ = open(file, O_WRONLY); \
@@ -1959,7 +1959,7 @@ static void reap_children(void) {
                  * short-circuits, blocking respawn forever. */
                 s->state = HZ_S_STOPPED;
                 /* deferred: linear backoff = restart_count seconds, capped at 30.
-                 * Non-blocking — scheduled via respawn_at, fired by main loop's
+                 * Non-blocking, scheduled via respawn_at, fired by main loop's
                  * timerfd. Old blocking sleep() would freeze the control socket. */
                 int delay = s->restart_count;
                 if (delay > 30) delay = 30;
@@ -1969,7 +1969,7 @@ static void reap_children(void) {
             } else if (!crashed || s->manual_stop) {
                 s->state = HZ_S_STOPPED;
                 if (!crashed) s->restart_count = 0;
-                /* deferred: cron job finished cleanly — re-arm next fire.
+                /* deferred: cron job finished cleanly, re-arm next fire.
                  * Crashed cron jobs fall through to the FAILED/respawn path
                  * below; they don't auto-re-arm. */
                 if (!crashed && s->cron_interval > 0 && !s->manual_stop) {
@@ -1985,9 +1985,9 @@ static void reap_children(void) {
     }
 }
 
-/* deferred: parallel stop — SIGTERM all, wait once (5s), SIGKILL stragglers.
+/* deferred: parallel stop, SIGTERM all, wait once (5s), SIGKILL stragglers.
  * Used by both shutdown_all (all services, reverse order) and reload (changed
- * services, list order). Single implementation — old serial path called
+ * services, list order). Single implementation, old serial path called
  * stop_service per service, each blocking up to 5s → 64 services = 320s of
  * unresponsive PID 1. Parallel is O(5s) total. */
 static void stop_parallel(hz_service_t **list, int n, const char *why) {
@@ -2046,7 +2046,7 @@ static void shutdown_all(void) {
  * SIGNAFD + CONTROL SOCKET + TIMERFD setup
  * ------------------------------------------------------------------------- */
 
-/* deferred: signalfd integrates signals into the poll loop — no async-signal
+/* deferred: signalfd integrates signals into the poll loop, no async-signal
  * handlers, no self-pipe. Block the signals first so they queue for the fd.
  * SFD_NONBLOCK so handle_signal's drain loop doesn't block when empty. */
 static int setup_signalfd(void) {
@@ -2058,7 +2058,7 @@ static int setup_signalfd(void) {
     sigaddset(&mask, SIGHUP);
     if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0) return -1;
     g_sigfd = signalfd(-1, &mask, SFD_CLOEXEC | SFD_NONBLOCK);
-    /* SIGPIPE still ignored via SIG_IGN — services that write to closed
+    /* SIGPIPE still ignored via SIG_IGN, services that write to closed
      * pipes should crash and respawn rather than take PID 1 with them. */
     signal(SIGPIPE, SIG_IGN);
     return g_sigfd;
@@ -2087,7 +2087,7 @@ static int setup_control_socket(void) {
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, g_ctl_path, sizeof(addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return -1; }
-    /* deferred: 0660 — root-only by default. Add a hoshizora group + chgrp
+    /* deferred: 0660, root-only by default. Add a hoshizora group + chgrp
      * when non-root operators need access. */
     chmod(g_ctl_path, 0660);
     listen(fd, 8);
@@ -2096,7 +2096,7 @@ static int setup_control_socket(void) {
 }
 
 static int setup_reload_timer(void) {
-    /* deferred: CLOCK_MONOTONIC — immune to NTP step adjustments and avoids
+    /* deferred: CLOCK_MONOTONIC, immune to NTP step adjustments and avoids
      * the integer-second truncation bug that CLOCK_REALTIME + TFD_TIMER_ABSTIME
      * had with respawn_at <= now checks (timer fires at X.5s, time(NULL)
      * returns X, respawn_at = X+1 → never respawns, busy-loops). */
@@ -2104,7 +2104,7 @@ static int setup_reload_timer(void) {
     return g_reloadfd;
 }
 
-/* deferred: monotonic clock in seconds — used for respawn_at.
+/* deferred: monotonic clock in seconds, used for respawn_at.
  * Wall clock (time(NULL)) is wrong here: NTP can step it backward, and
  * integer-second truncation breaks absolute-time timer comparisons. */
 static time_t mono_now(void) {
@@ -2148,7 +2148,7 @@ static void run_health_checks(void) {
          * and not expecting notify → disarm. */
         s->start_deadline = 0;
     }
-    /* v2.2: watchdog — services with watchdog_timeout set must send
+    /* v2.2: watchdog, services with watchdog_timeout set must send
      * WATCHDOG=1 within that interval or be marked FAILED. */
     for (int i = 0; i < g_sys.n_services; i++) {
         hz_service_t *s = &g_sys.services[i];
@@ -2162,7 +2162,7 @@ static void run_health_checks(void) {
     }
     /* deferred: probe every RUNNING service with health.hostport set.
      * 3 consecutive failures → mark FAILED + SIGTERM. Probes are sequential
-     * (max 64 services × 5s timeout = 320s worst case — but real services
+     * (max 64 services × 5s timeout = 320s worst case, but real services
      * answer in <10ms, and timeouts are rare; acceptable for PID 1). */
     for (int i = 0; i < g_sys.n_services; i++) {
         hz_service_t *s = &g_sys.services[i];
@@ -2189,9 +2189,9 @@ static void run_health_checks(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * FANOTIFY — file watches. Single fd, mark all paths, longest-prefix-match
+ * FANOTIFY, file watches. Single fd, mark all paths, longest-prefix-match
  * events to watches. deferred: needs CAP_SYS_ADMIN. If init isn't running as
- * root (test mode), fanotify_init fails and watches are inert — services still
+ * root (test mode), fanotify_init fails and watches are inert, services still
  * run, just no auto-reload/restart on file changes.
  * ------------------------------------------------------------------------- */
 static int setup_fanotify(void) {
@@ -2210,11 +2210,11 @@ static int setup_fanotify(void) {
         hz_watch_t *w = &g_sys.watches[i];
         /* v2.2: recursive keyword honored via FAN_MARK_FILESYSTEM (kernel ≥5.16).
          * Marks the whole filesystem containing w->path. deferred: per-subtree
-         * filtering — operator gets events for the whole fs, plugin can grep. */
+         * filtering, operator gets events for the whole fs, plugin can grep. */
         unsigned flags = FAN_MARK_ADD;
         if (w->recursive) flags |= FAN_MARK_FILESYSTEM;
         if (fanotify_mark(g_fanfd, flags, mask, AT_FDCWD, w->path) < 0) {
-            /* FAN_MARK_FILESYSTEM may be unsupported on older kernels — retry
+            /* FAN_MARK_FILESYSTEM may be unsupported on older kernels, retry
              * without it so we at least watch the top dir (pre-v2.2 behavior). */
             if (w->recursive && errno == EINVAL) {
                 LOGW("fanotify_mark %s: FAN_MARK_FILESYSTEM unsupported — top-dir only", w->path);
@@ -2273,7 +2273,7 @@ static void handle_fanotify_event(void) {
         LOGI("watch %s: change in %s -> %s %s", best->path, path,
              best->action == HZ_W_RELOAD ? "reload" : "restart", best->service);
         if (best->action == HZ_W_RELOAD) {
-            /* send SIGHUP to the service — let it reload itself */
+            /* send SIGHUP to the service, let it reload itself */
             if (s->pid > 0) kill(s->pid, SIGHUP);
         } else {
             /* restart: stop (sets manual_stop) + start (clears manual_stop) */
@@ -2289,13 +2289,13 @@ static void handle_fanotify_event(void) {
  * (except `list` which emits one line per service). No framing, no JSON.
  *
  * Commands:
- *   list                       — list all services with state
- *   status [name]              — same as list (or one service)
- *   start <name>               — start a stopped/manual-stopped service
- *   stop <name>                — stop a running service (no respawn)
- *   restart <name>             — stop + start
- *   reload                     — re-read config, diff + apply
- *   shutdown                   — stop all + exit
+ *   list                      : list all services with state
+ *   status [name]             : same as list (or one service)
+ *   start <name>              : start a stopped/manual-stopped service
+ *   stop <name>               : stop a running service (no respawn)
+ *   restart <name>            : stop + start
+ *   reload                    : re-read config, diff + apply
+ *   shutdown                  : stop all + exit
  * ------------------------------------------------------------------------- */
 
 static void ctl_send(int fd, const char *s) {
@@ -2323,7 +2323,7 @@ static void handle_control_client(int cfd) {
     if (arg) { *arg++ = 0; while (*arg == ' ') arg++; }
 
     /* v2.3: SOV-only protocol. <name> <action> [<args>]. The first word is
-     * either a known top-level command (no subject — list/show/logs/etc.)
+     * either a known top-level command (no subject, list/show/logs/etc.)
      * OR a service name (subject), with the second word being the action
      * (verb). Action-first form (`start nginx`) is no longer auto-reordered;
      * if a user types it, `start` is treated as a service name and the
@@ -2388,7 +2388,7 @@ static void handle_control_client(int cfd) {
         hz_service_t *s = find_service(name);
         if (s) { start_service(s); ctl_send(cfd, "ok"); }
         else {
-            /* v2.0: target — start all services in the named target. */
+            /* v2.0: target, start all services in the named target. */
             hz_target_t *tg = find_target(name);
             if (tg) {
                 int started = 0;
@@ -2467,7 +2467,7 @@ static void handle_control_client(int cfd) {
 }
 
 /* ---------------------------------------------------------------------------
- * RELOAD — re-read config, diff, apply.
+ * RELOAD, re-read config, diff, apply.
  * deferred: snapshot running pids by name, re-read, walk new config to adopt
  * or restart, walk snapshot to kill removed. ~30 lines, no clever diffing.
  * ------------------------------------------------------------------------- */
@@ -2484,16 +2484,16 @@ static int service_spec_changed(const hz_service_t *a, const hz_service_t *b) {
     if (a->respawn != b->respawn) return 1;
     if (a->n_deps != b->n_deps) return 1;
     for (int i = 0; i < a->n_deps; i++) if (strcmp(a->deps[i], b->deps[i]) != 0) return 1;
-    /* deferred: spec changes that affect the running process — restart on diff.
+    /* deferred: spec changes that affect the running process, restart on diff.
      * memory/cpu/oom-kill/log_path/on-fail are start-time effects: cgroup
      * setup, log redirect, on-fail target wiring. start-cond/healthy are NOT
-     * compared — they're re-evaluated at every start / every 5s probe, so a
+     * compared, they're re-evaluated at every start / every 5s probe, so a
      * config change takes effect without a restart. */
     if (a->memory_limit   != b->memory_limit)   return 1;
     if (a->cpu_weight     != b->cpu_weight)     return 1;
     if (a->oom_kill_group != b->oom_kill_group) return 1;
     if (strcmp(a->log_path, b->log_path) != 0)  return 1;
-    /* on-fail: a runtime-side-effect change — restart picks up the new target */
+    /* on-fail: a runtime-side-effect change, restart picks up the new target */
     if (a->on_fail.kind != b->on_fail.kind)     return 1;
     if (a->on_fail.kind == HZ_ON_FAIL_RESTART &&
         strcmp(a->on_fail.target, b->on_fail.target) != 0) return 1;
@@ -2502,9 +2502,9 @@ static int service_spec_changed(const hz_service_t *a, const hz_service_t *b) {
 
 static void reload_config(const char *path) {
     LOGI("reload: re-reading %s", path);
-    /* deferred: snapshot pre-reload services (full structs) — used for both
+    /* deferred: snapshot pre-reload services (full structs), used for both
      * spec-change detection AND runtime-field adoption. Old code had snap[]
-     * (subset of fields) AND old[] (full structs) for the same purpose —
+     * (subset of fields) AND old[] (full structs) for the same purpose.
      * snap[] dropped, old[] serves both. */
     int old_n = g_sys.n_services;
     hz_service_t *old = malloc(sizeof(hz_service_t) * old_n);
@@ -2577,7 +2577,7 @@ static void reload_config(const char *path) {
 }
 
 /* ---------------------------------------------------------------------------
- * RESPAWN SCHEDULER — single timerfd armed to the next pending respawn_at
+ * RESPAWN SCHEDULER, single timerfd armed to the next pending respawn_at
  * ------------------------------------------------------------------------- */
 
 static void arm_respawn_timer(void) {
@@ -2585,7 +2585,7 @@ static void arm_respawn_timer(void) {
     time_t earliest = 0;
     for (int i = 0; i < g_sys.n_services; i++) {
         time_t r = g_sys.services[i].respawn_at;
-        /* deferred: cron_next reuses the same timerfd — a cron job firing is
+        /* deferred: cron_next reuses the same timerfd, a cron job firing is
          * just another "wake me at time T" pending event. One timer, two
          * reasons to fire. */
         if (g_sys.services[i].cron_next) r = r ? (r < g_sys.services[i].cron_next ? r : g_sys.services[i].cron_next) : g_sys.services[i].cron_next;
@@ -2613,9 +2613,9 @@ static void fire_due_respawns(void) {
             s->respawn_at = 0;
             if (!s->manual_stop) start_service(s);
         }
-        /* deferred: cron fire — start_service sets state=RUNNING; reap_children
+        /* deferred: cron fire, start_service sets state=RUNNING; reap_children
          * sees the clean exit, re-arms cron_next = now + cron_interval. Cron
-         * jobs don't use respawn_at — they're not crashes. */
+         * jobs don't use respawn_at, they're not crashes. */
         if (s->cron_interval > 0 && s->cron_next != 0 && s->cron_next <= now
             && s->state != HZ_S_RUNNING && !s->manual_stop) {
             s->cron_next = 0;
@@ -2626,7 +2626,7 @@ static void fire_due_respawns(void) {
 }
 
 /* ---------------------------------------------------------------------------
- * MAIN LOOP — single poll() over signalfd, control socket, respawn timer
+ * MAIN LOOP, single poll() over signalfd, control socket, respawn timer
  * ------------------------------------------------------------------------- */
 
 static void handle_signal(void) {
@@ -2657,10 +2657,10 @@ int main(int argc, char **argv) {
     if (setup_control_socket() < 0) { LOGE("control socket: %s", strerror(errno)); return 1; }
     if (setup_reload_timer() < 0) { LOGE("timerfd: %s", strerror(errno)); return 1; }
     if (setup_health_timer() < 0) { LOGW("health timerfd: %s — health probes disabled", strerror(errno)); }
-    setup_fanotify();  /* non-fatal if it fails — watches just become inert */
+    setup_fanotify();  /* non-fatal if it fails, watches just become inert */
     setup_listen_sockets();  /* v2.0: bind socket-activation fds before services start */
-    setup_notify_socket();   /* v2.0: sd_notify socket — non-fatal if it fails */
-    setup_event_socket();    /* v2.1: plugin event broadcast — non-fatal if it fails */
+    setup_notify_socket();   /* v2.0: sd_notify socket, non-fatal if it fails */
+    setup_event_socket();    /* v2.1: plugin event broadcast, non-fatal if it fails */
     openlog("hoshizora", LOG_PID | LOG_NDELAY, LOG_DAEMON);  /* v2.0: journal integration */
     drop_capabilities();     /* v2.0: drop caps we don't need (warns if it fails) */
 
@@ -2679,7 +2679,7 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < g_sys.n_services; i++) {
         hz_service_t *s = &g_sys.services[i];
-        /* deferred: cron jobs don't auto-start — they schedule their first fire
+        /* deferred: cron jobs don't auto-start, they schedule their first fire
          * via cron_next, the timer fires start_service when due. */
         if (s->cron_interval > 0) {
             s->cron_next = mono_now() + s->cron_interval;
