@@ -119,13 +119,17 @@ int main(int argc, char **argv) {
         /* maybe run cmd */
         if (run_cmd && (!match_prefix || strncmp(line, match_prefix, strlen(match_prefix)) == 0)) {
             pid_t pid = fork();
-            if (pid == 0) {
+            if (pid < 0) {
+                /* v2.4: fork() failed (out of procs, RLIMIT_NPROC). Don't kill
+                 * the plugin; just skip this event. Next event retries. */
+                fprintf(stderr, "hz-event-logger: fork: %s\n", strerror(errno));
+            } else if (pid == 0) {
                 /* child, pipe event line to cmd's stdin */
                 int p[2];
                 if (pipe(p) < 0) { _exit(127); }
                 dup2(p[0], 0);
                 close(p[0]);
-                dprintf(p[1], "%s\n", line);
+                if (dprintf(p[1], "%s\n", line) < 0) { close(p[1]); _exit(127); }
                 close(p[1]);
                 execl("/bin/sh", "sh", "-c", run_cmd, NULL);
                 _exit(127);

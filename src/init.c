@@ -111,6 +111,7 @@ static int  g_n_vars;
 static int  cgroup_v2_available(void);
 static void cgroup_setup_for(const hz_service_t *s);
 static void cgroup_assign_pid(const hz_service_t *s, pid_t pid);
+static void cgroup_kill_remaining(const hz_service_t *s);
 static void cgroup_teardown_for(const hz_service_t *s);
 static hz_service_t *find_service(const char *name);
 static hz_target_t  *find_target(const char *name);
@@ -141,12 +142,34 @@ static time_t mono_now(void);  /* v2.2: needed by handle_notify_event + start_se
 /* ---------------------------------------------------------------------------
  * LOGGING, writes to stderr AND an in-memory ring buffer for `hzctl logs`.
  * deferred: 8 KiB ring, byte-addressed with wrap. Walked backward for tail-N.
+ *
+ * Signal safety: PID 1 uses signalfd exclusively. No async-signal handlers
+ * are installed (SIGPIPE is SIG_IGN, set before the loop). log_msg therefore
+ * never runs in a signal context and may call vsyslog/snprintf freely.
  * ------------------------------------------------------------------------- */
 static void ctl_send(int fd, const char *s);  /* forward decl, defined in CONTROL SOCKET section */
 #define HZ_LOG_RING_SIZE 8192
 static char g_log_ring[HZ_LOG_RING_SIZE];
 static int  g_log_ring_pos;   /* next write offset (wraps) */
 static int  g_log_ring_used;  /* bytes currently in ring, capped at size */
+
+/* write_all: loop write() until all bytes are sent or the fd errors. Partial
+ * writes happen on pipes, sockets, and full kernel buffers. The old code did
+ * `(void)write(...)` and silently truncated long log lines + control replies
+ * when the kernel buffer was tight. Not async-signal-safe (uses errno). */
+static int write_all(int fd, const char *buf, size_t n) {
+    size_t off = 0;
+    while (off < n) {
+        ssize_t w = write(fd, buf + off, n - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (w == 0) return -1;  /* nothing written, can't make progress */
+        off += (size_t)w;
+    }
+    return 0;
+}
 
 static void log_ring_append(const char *buf, int n) {
     if (n >= HZ_LOG_RING_SIZE) {
@@ -175,7 +198,7 @@ static void log_msg(const char *level, const char *fmt, ...) {
     va_end(ap);
     n = strlen(buf);
     if (n < (int)sizeof(buf) - 1) { buf[n++] = '\n'; buf[n] = 0; }
-    (void)write(2, buf, n);
+    (void)write_all(2, buf, (size_t)n);
     log_ring_append(buf, n);
     /* v2.0: forward to syslog (hzlog collects /dev/log). No-op if /dev/log
      * is missing. Pass the formatted message directly via vsyslog so the
@@ -283,7 +306,7 @@ static int setup_listen_sockets(void) {
                 struct sockaddr_un un = {0};
                 un.sun_family = AF_UNIX;
                 strncpy(un.sun_path, addr, sizeof(un.sun_path) - 1);
-                if (bind(fd, (struct sockaddr*)&un, sizeof(un)) < 0 || listen(fd, 8) < 0) {
+                if (bind(fd, (struct sockaddr*)&un, sizeof(un)) < 0 || listen(fd, SOMAXCONN) < 0) {
                     LOGW("%s: bind %s: %s", s->name, addr, strerror(errno));
                     close(fd); continue;
                 }
@@ -294,7 +317,7 @@ static int setup_listen_sockets(void) {
                     LOGW("%s: bad listen: %s", s->name, addr); continue;
                 }
                 fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-                if (fd < 0) continue;
+                if (fd < 0) { LOGW("%s: tcp socket: %s", s->name, strerror(errno)); continue; }
                 int one = 1;
                 setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
                 struct sockaddr_in sa = {0};
@@ -303,7 +326,7 @@ static int setup_listen_sockets(void) {
                 if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
                     LOGW("%s: bad listen host: %s", s->name, host); close(fd); continue;
                 }
-                if (bind(fd, (struct sockaddr*)&sa, sizeof(sa)) < 0 || listen(fd, 8) < 0) {
+                if (bind(fd, (struct sockaddr*)&sa, sizeof(sa)) < 0 || listen(fd, SOMAXCONN) < 0) {
                     LOGW("%s: bind %s: %s", s->name, addr, strerror(errno));
                     close(fd); continue;
                 }
@@ -348,7 +371,7 @@ static int setup_unix_socket(const char *env_name, const char *default_path,
     }
     strcpy(addr.sun_path, path_out);
     if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0
-        || (do_listen && listen(fd, 8) < 0)) {
+        || (do_listen && listen(fd, SOMAXCONN) < 0)) {
         LOGW("%s bind: %s", label, strerror(errno));
         close(fd); return -1;
     }
@@ -601,17 +624,18 @@ static void logs_dump(int cfd, int n_lines) {
     }
     dump_len = (g_log_ring_pos - dump_start + HZ_LOG_RING_SIZE) % HZ_LOG_RING_SIZE;
     if (dump_len == 0) { ctl_send(cfd, "(no logs)"); return; }
-    /* write in up to two parts (wrap) */
+    /* write in up to two parts (wrap). Use write_all so a slow client can't
+     * truncate the tail. */
     if (dump_start + dump_len <= HZ_LOG_RING_SIZE) {
-        (void)write(cfd, g_log_ring + dump_start, dump_len);
+        (void)write_all(cfd, g_log_ring + dump_start, (size_t)dump_len);
     } else {
         int first = HZ_LOG_RING_SIZE - dump_start;
-        (void)write(cfd, g_log_ring + dump_start, first);
-        (void)write(cfd, g_log_ring, dump_len - first);
+        (void)write_all(cfd, g_log_ring + dump_start, (size_t)first);
+        (void)write_all(cfd, g_log_ring, (size_t)(dump_len - first));
     }
     /* ensure trailing newline */
     int last = (g_log_ring_pos - 1 + HZ_LOG_RING_SIZE) % HZ_LOG_RING_SIZE;
-    if (g_log_ring[last] != '\n') (void)write(cfd, "\n", 1);
+    if (g_log_ring[last] != '\n') (void)write_all(cfd, "\n", 1);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1691,6 +1715,9 @@ static int start_service(hz_service_t *s) {
     /* deferred: cgroup v2, create per-service dir, write limits. No-op if
      * cgroup v2 isn't mounted (LOGW once at startup). */
     cgroup_setup_for(s);
+    /* v2.4: kill any leftover processes from a previous instance that was
+     * SIGKILLed or crashed. No-op if no cgroup exists for this service. */
+    cgroup_kill_remaining(s);
 
     /* v2.2: pre-start hook, run a shell command before forking. Failure
      * (non-zero exit) aborts the start. deferred: no timeout on pre-start. */
@@ -1797,6 +1824,7 @@ static int start_service(hz_service_t *s) {
     s->state = HZ_S_RUNNING;
     s->notify_ready = 0;  /* v2.0: clear on (re)start */
     s->watchdog_last = mono_now();  /* v2.2: arm watchdog baseline */
+    s->last_start_mono = s->watchdog_last;  /* v2.4: rate-limit baseline */
     /* v2.0: arm start_deadline if timeout-start is set. Disarmed by
      * run_health_checks when state != RUNNING past deadline, or by
      * handle_notify_event on READY=1. */
@@ -1903,6 +1931,57 @@ static void cgroup_assign_pid(const hz_service_t *s, pid_t pid) {
     close(fd);
 }
 
+/* v2.4: cgroup leak prevention. If a previous instance of this service was
+ * SIGKILLed or crashed leaving stray children in the cgroup, kill them now so
+ * the new start doesn't share a cgroup with orphaned processes.
+ *
+ * cgroup.kill (cgroup v2, kernel >=5.14) is the clean way: write "1" and the
+ * kernel SIGKILLs every process in the cgroup. On older kernels (or if the
+ * file is missing), fall back to reading cgroup.procs and kill(2) each pid.
+ * Silently no-op if no cgroup exists for this service (clean start). */
+static void cgroup_kill_remaining(const hz_service_t *s) {
+    char path[HZ_MAX_PATH];
+    snprintf(path, sizeof(path), "%s/%s", HZ_CGROUP_BASE, s->name);
+
+    char killfile[HZ_MAX_PATH + 32];
+    snprintf(killfile, sizeof(killfile), "%s/cgroup.kill", path);
+    int fd = open(killfile, O_WRONLY);
+    if (fd >= 0) {
+        /* cgroup.kill available, use it (atomic, race-free). */
+        if (write_all(fd, "1", 1) == 0) {
+            LOGI("%s: killed leftover processes in cgroup via cgroup.kill", s->name);
+        }
+        close(fd);
+        return;
+    }
+    if (errno == ENOENT) {
+        /* Either no cgroup for this service (clean), or cgroup v2 unavailable.
+         * Try cgroup.procs to disambiguate; if that's also missing, no-op. */
+    } else {
+        LOGW("%s: open %s: %s — falling back to cgroup.procs walk",
+             s->name, killfile, strerror(errno));
+    }
+
+    /* Fallback: read cgroup.procs line by line, kill each pid. */
+    char procsfile[HZ_MAX_PATH + 32];
+    snprintf(procsfile, sizeof(procsfile), "%s/cgroup.procs", path);
+    FILE *f = fopen(procsfile, "r");
+    if (!f) return;  /* ENOENT is the common case, silent */
+    char line[32];
+    int killed = 0;
+    while (fgets(line, sizeof(line), f)) {
+        pid_t p = (pid_t)atoi(line);
+        if (p > 0 && p != getpid()) {
+            if (kill(p, SIGKILL) == 0 || errno == ESRCH) killed++;
+        }
+    }
+    fclose(f);
+    if (killed > 0) {
+        LOGW("%s: killed %d leftover processes in cgroup via cgroup.procs walk",
+             s->name, killed);
+    }
+}
+
 static void cgroup_teardown_for(const hz_service_t *s) {
     if (s->memory_limit == 0 && s->cpu_weight == 0 && !s->oom_kill_group) return;
     char path[HZ_MAX_PATH];
@@ -1952,6 +2031,32 @@ static void reap_children(void) {
                 break;
             }
             if (crashed && s->respawn && !s->manual_stop) {
+                time_t now = mono_now();
+                /* v2.4: fast-crash rate limiter. If the service exited within
+                 * 1 second of starting, it's a fast crash (segfault, missing
+                 * config, bad args). 5 fast crashes within a 30s window = the
+                 * service is broken, give up. Independent of max_restarts so
+                 * it catches services with max=100 that are clearly wedged. */
+                int fast_crash = (s->last_start_mono > 0
+                                  && now - s->last_start_mono <= 1);
+                if (fast_crash) {
+                    if (s->fast_crash_window == 0
+                        || now - s->fast_crash_window >= 30) {
+                        s->fast_crash_window = now;
+                        s->fast_crash_count = 0;
+                    }
+                    s->fast_crash_count++;
+                    if (s->fast_crash_count >= 5) {
+                        LOGE("%s: fast-crash rate limit hit (%d crashes in %llds) — giving up",
+                             s->name, s->fast_crash_count,
+                             (long long)(now - s->fast_crash_window));
+                        mark_failed(s);
+                        s->respawn_at = 0;
+                        break;
+                    }
+                    LOGW("%s: fast crash (%d/5 in window) — will retry with backoff",
+                         s->name, s->fast_crash_count);
+                }
                 s->restart_count++;
                 /* deferred: state → STOPPED so start_service will accept the
                  * respawn. Without this, state stays RUNNING from before the
@@ -1968,7 +2073,14 @@ static void reap_children(void) {
                      s->name, delay, s->restart_count);
             } else if (!crashed || s->manual_stop) {
                 s->state = HZ_S_STOPPED;
-                if (!crashed) s->restart_count = 0;
+                if (!crashed) {
+                    s->restart_count = 0;
+                    /* v2.4: clean exit resets the fast-crash window. A service
+                     * that recovers after a few bad starts shouldn't carry the
+                     * old crash history forever. */
+                    s->fast_crash_count = 0;
+                    s->fast_crash_window = 0;
+                }
                 /* deferred: cron job finished cleanly, re-arm next fire.
                  * Crashed cron jobs fall through to the FAILED/respawn path
                  * below; they don't auto-re-arm. */
@@ -2090,7 +2202,7 @@ static int setup_control_socket(void) {
     /* deferred: 0660, root-only by default. Add a hoshizora group + chgrp
      * when non-root operators need access. */
     chmod(g_ctl_path, 0660);
-    listen(fd, 8);
+    if (listen(fd, SOMAXCONN) < 0) { close(fd); return -1; }
     g_ctlfd = fd;
     return fd;
 }
@@ -2250,6 +2362,26 @@ static void handle_fanotify_event(void) {
     for (char *p = buf; p + sizeof(struct fanotify_event_metadata) <= buf + n;
          p += ((struct fanotify_event_metadata*)p)->event_len) {
         struct fanotify_event_metadata *e = (struct fanotify_event_metadata*)p;
+        /* v2.4: FAN_Q_OVERFLOW = the kernel dropped events because the
+         * fanotify queue filled. mask=FAN_Q_OVERFLOW (0x4000), fd=FAN_NOFD
+         * (-1). Re-mark all watched paths to refresh the kernel's interest
+         * list and warn so the operator knows reload/restart may have been
+         * missed. Don't try to replay dropped events; we don't know which
+         * paths changed. */
+        if (e->mask & FAN_Q_OVERFLOW) {
+            LOGW("fanotify: event queue overflowed — re-marking watches, some reload/restart events may have been lost");
+            unsigned mask = FAN_MODIFY | FAN_CLOSE_WRITE | FAN_MOVED_FROM |
+                            FAN_MOVED_TO | FAN_CREATE | FAN_DELETE;
+            for (int i = 0; i < g_sys.n_watches; i++) {
+                hz_watch_t *w = &g_sys.watches[i];
+                unsigned flags = FAN_MARK_ADD | (w->recursive ? FAN_MARK_FILESYSTEM : 0);
+                if (fanotify_mark(g_fanfd, flags, mask, AT_FDCWD, w->path) < 0
+                    && w->recursive && errno == EINVAL) {
+                    (void)fanotify_mark(g_fanfd, FAN_MARK_ADD, mask, AT_FDCWD, w->path);
+                }
+            }
+            continue;
+        }
         if (e->fd < 0) continue;
         /* resolve path */
         char proc[64], path[HZ_MAX_PATH];
@@ -2299,8 +2431,8 @@ static void handle_fanotify_event(void) {
  * ------------------------------------------------------------------------- */
 
 static void ctl_send(int fd, const char *s) {
-    (void)write(fd, s, strlen(s));
-    (void)write(fd, "\n", 1);
+    (void)write_all(fd, s, strlen(s));
+    (void)write_all(fd, "\n", 1);
 }
 
 static const char *state_str(hz_state_t st) {

@@ -140,6 +140,13 @@ typedef struct {
     int        n_listen_fds;
     int        notify_ready;     /* runtime: 1 = service sent READY=1 */
     time_t     watchdog_last;    /* runtime: mono_now() of last WATCHDOG=1 */
+    /* v2.4: restart rate limiter. If a service exits within 1 second of
+     * starting, that's a fast crash. After 5 fast crashes within a 30s
+     * window, give up and mark_failed. Independent of max_restarts, which
+     * counts ALL restarts (including slow ones). */
+    time_t     last_start_mono;       /* mono_now() of last successful fork */
+    time_t     fast_crash_window;     /* 0 = no window active; else window start */
+    int        fast_crash_count;      /* crashes within the current window */
 } hz_service_t;
 
 typedef struct {
