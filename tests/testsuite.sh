@@ -52,6 +52,7 @@ run "hzlog"          hzlog.sh
 run "v2-features"    v2.sh
 run "v2.1-features"  v21.sh
 run "plugin"         plugin.sh
+run "edge-cases"     edge_cases.sh
 
 echo "========================================================"
 echo "  TESTSUITE SUMMARY"
