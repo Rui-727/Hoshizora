@@ -105,7 +105,6 @@ Intentionally omitted. See `DEFERRED.md` for the full ledger. Add when actually 
 - **per-service capability drop** (PID 1 caps are dropped post-setup; per-service capsets deferred, add when a config asks)
 - **non-root operator access** to the control socket (add a `hoshizora` group + chgrp when needed)
 - **recursive fanotify walk** (the `recursive` keyword is parsed but only the top directory is marked; subdirectory changes won't fire)
-- **`memory-high`, `io-weight`** cgroup fields (add when a config uses them)
 - **bootloader / custom libc / slab allocator / .hsb bytecode**. All spec items dropped. Kernel + glibc static + text config is enough.
 - **cron-syntax `0 3 * * *`**. Date arithmetic, defer until a real config asks (interval-based `every:` covers most cases)
 - **`isolate` target command** (stop everything not in a target's dep closure). Add when a real config needs systemd-style isolate semantics.
@@ -141,7 +140,7 @@ or `pacman -S musl` (Arch).
 make test
 ```
 
-Runs `tests/testsuite.sh`, which executes eight self-checks in sequence and tallies PASS/FAIL (currently 65 PASS / 0 FAIL):
+Runs `tests/testsuite.sh`, which executes nine self-checks in sequence and tallies PASS/FAIL (currently 83 PASS / 0 FAIL):
 
 - **`tests/core.sh`** against `tests/core.hs` (two `/bin/true` services with a dependency + one bad-exec service). Exercises every control-socket command in SOV form (`<name> <action>`), exercises `enable`/`disable`/`show`/`logs`/`daemon-reload`, asserts each step, and verifies the bad-exec service goes to FAILED without a respawn storm. Also verifies `reboot(2)` is invoked on shutdown (expected to fail with EPERM in non-PID-1 test env).
 - **`tests/features.sh`** against `tests/features.hs`. Verifies the parser accepts `memory-limit`, `cpu-weight`, `oom-kill`, `log`, `start-condition` (single + AND forms), `watch` blocks, `backoff(max=N)` extraction, `network_ready` virtual intent (verified at runtime against `/sys/class/net/`), AND that per-service log files are actually created on disk when services run.
@@ -151,20 +150,53 @@ Runs `tests/testsuite.sh`, which executes eight self-checks in sequence and tall
 - **`tests/v2.sh`** against `tests/v2.hs`. v2.0 features: variable substitution (`$SOCK`), `timeout-start:`, socket activation (`listen:` Unix path), `target` block + `hzctl start <target>`, capability-dropping attempt (warns in sandbox), sd-notify socket bind.
 - **`tests/v21.sh`** against `tests/v21.hs`. v2.1: event socket binds, subscriber connects + receives HELLO + START events, shutdown gate refuses with a fake session file present, `--force` override proceeds.
 - **`tests/plugin.sh`** against `tests/v21.hs`. `hz-event-logger` subscribes, logs events to a file, stays alive through events, receives SHUTDOWN event on hoshizora exit.
+- **`tests/edge_cases.sh`** (no `.hs`; generates its own at runtime). Static checks: no async-signal handlers (signalfd-only), `write_all()` exists and is used by every PID-1 client write, `cgroup_kill_remaining()` is called from `start_service`. Runtime check: fast-crash rate limiter fires after 5 crashes in 30s even when `max_restarts` is high.
 
 A final `TESTSUITE SUMMARY` line prints total PASS / FAIL counts and the script exits non-zero if any check failed.
 
 ## Install
 
 ```bash
-sudo make install   # copies hoshizora to /sbin/, hzctl + hzlog + hz-event-logger to /usr/bin/
-                    # hz-session is not installed by 'make install'. Copy manually to
-                    # /etc/hoshizora/hz-session and wire into /etc/pam.d/.
+sudo make install
+```
+
+Installs:
+- `/sbin/hoshizora` (PID 1)
+- `/usr/bin/{hzctl, hzlog, hz-event-logger}`
+- `/usr/include/hoshizora.h` (header for C plugins)
+- `/usr/lib/hoshizora/{hz-session, hzctl-systemctl}` (pam_exec + systemctl-compat)
+- `/usr/share/bash-completion/completions/hzctl`
+- `/usr/share/zsh/site-functions/_hzctl`
+
+Override the layout with `PREFIX`, `SBINDIR`, `BINDIR`, `INCLUDEDIR`, `LIBDIR`, `COMPLETIONSDIR`, `ZSHDIR`, `DESTDIR` (for packaging into a fakeroot). Example:
+
+```bash
+make DESTDIR=$pkgdir PREFIX=/usr install   # Arch PKGBUILD pattern
 ```
 
 Then either:
 - `init=/sbin/hoshizora` on the kernel command line, or
-- `ln -sf /sbin/hoshizora /sbin/init`
+- `ln -sf /sbin/hoshizora /sbin/init` (the PKGBUILD ships this symlink)
+
+### Arch Linux
+
+A `PKGBUILD` is included at the repo root. Build a pacman package with:
+
+```bash
+makepkg -si
+```
+
+The package `conflicts=('systemd' 'openrc' 'runit' 'sinit' 'busybox-init')` and `provides=('init')`. Install only one init per box.
+
+### pam_exec (session tracking)
+
+```bash
+sudo install -Dm644 /dev/stdin /etc/pam.d/login.hoshizora <<'EOF'
+session required pam_exec.so /usr/lib/hoshizora/hz-session
+EOF
+```
+
+Wire the include into your `/etc/pam.d/login` (or `system-login`) so the hz-session helper runs on every login/logout. The helper writes `/run/hoshizora/sessions/$USER` and grants ACLs on `/dev/dri/*`, `/dev/snd/*`, `/dev/input/event*`, `/dev/video*` (override with `HZ_SESSION_DEVS`). `hzctl shutdown` refuses while sessions are open; `--force` bypasses.
 
 ## Config format (subset of the original HCL-style grammar)
 

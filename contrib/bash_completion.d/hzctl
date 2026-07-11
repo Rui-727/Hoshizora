@@ -1,0 +1,41 @@
+# Bash completion for hzctl (SOV: <name> <action>).
+# Install: cp hzctl-completion.bash /etc/bash_completion.d/hzctl
+# Or: source hzctl-completion.bash in your .bashrc
+
+_hzctl() {
+    local cur prev words cword
+    _init_completion || return
+    local top_cmds="list status show logs reload daemon-reload shutdown poweroff reboot help"
+    local actions="start stop restart reload status enable disable"
+
+    # First word: either a top-level command OR a service/target name.
+    if [ "$cword" -eq 1 ]; then
+        local services
+        services=$(hzctl list 2>/dev/null | awk 'NF>=1 && $1!~/^\(/ {print $1}')
+        COMPREPLY=( $(compgen -W "$top_cmds $services" -- "$cur") )
+        return 0
+    fi
+
+    # Second word: if the first word wasn't a top-level command, it's a
+    # service name - complete the action verb.
+    if [ "$cword" -eq 2 ]; then
+        case "$prev" in
+            list|status|show|logs|reload|daemon-reload|shutdown|poweroff|reboot|help)
+                # Top-level command - complete its args if any (logs N, status <name>).
+                case "$prev" in
+                    status) COMPREPLY=( $(compgen -W "$(hzctl list 2>/dev/null | awk 'NF>=1 && $1!~/^\(/ {print $1}')" -- "$cur") ); return 0 ;;
+                    logs)   COMPREPLY=( $(compgen -W "10 20 50 100" -- "$cur") ); return 0 ;;
+                    *)      return 0 ;;
+                esac
+                ;;
+            *)
+                # First word was a service/target name - complete the action.
+                COMPREPLY=( $(compgen -W "$actions" -- "$cur") )
+                return 0
+                ;;
+        esac
+    fi
+
+    return 0
+}
+complete -F _hzctl hzctl
